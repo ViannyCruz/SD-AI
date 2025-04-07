@@ -1,4 +1,5 @@
-streamlit
-numpy
-pandas
-scikit-learn
+streamlit>=1.29.0
+tensorflow>=2.14.0
+numpy>=1.24.0
+pillow>=10.0.0
+matplotlib>=3.7.0
