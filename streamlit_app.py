@@ -232,7 +232,7 @@ with st.sidebar:
     model_url = st.text_input(
         "URL del modelo", 
         # REEMPLAZA ESTA URL con la del modelo H5 en GitHub Releases
-        "https://github.com/ViannyCruz/SD-AI/releases/download/tag01/best_model.h5",
+        "https://github.com/ViannyCruz/SD-AI/releases/download/tag01/best_model.keras",
         help="URL directa para descargar el modelo"
     )
     
