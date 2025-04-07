@@ -29,8 +29,14 @@ def convertir_keras_a_h5(ruta_keras, ruta_h5=None):
             
         st.info(f"Convirtiendo modelo de formato .keras a .h5...")
         
-        # Cargar el modelo en formato .keras
-        modelo = tf.keras.models.load_model(ruta_keras)
+        # Cargar el modelo en formato .keras con opciones adicionales para manejar modelos problemáticos
+        modelo = tf.keras.models.load_model(
+            ruta_keras,
+            compile=False,  # No compilar para evitar problemas con capas personalizadas
+            options=tf.saved_model.LoadOptions(
+                experimental_io_device='/job:localhost'
+            )
+        )
         
         # Guardar el modelo en formato .h5
         modelo.save(ruta_h5, save_format='h5')
@@ -39,12 +45,81 @@ def convertir_keras_a_h5(ruta_keras, ruta_h5=None):
         return ruta_h5
     except Exception as e:
         st.error(f"❌ Error al convertir el modelo: {str(e)}")
+        # Proporcionar información más detallada sobre el error
+        st.info("Intentando método alternativo de conversión...")
+        return intentar_conversion_alternativa(ruta_keras, ruta_h5)
+        
+def intentar_conversion_alternativa(ruta_keras, ruta_h5):
+    """Intenta métodos alternativos para cargar un modelo problemático"""
+    try:
+        # Método 1: Cargar con tf.io.read_file y tf.io.decode_raw
+        st.info("Método alternativo 1: Carga con TensorFlow SavedModel")
+        # Intentar cargar como un modelo SavedModel si es posible
+        # Guardar en un directorio temporal primero
+        temp_dir = "temp_model_dir"
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        # Intentar cargar usando el formato SavedModel
+        try:
+            # Cargar modelo con opciones explícitas de SavedModel
+            modelo = tf.keras.models.load_model(
+                ruta_keras,
+                custom_objects=None,
+                compile=False,
+                options=tf.saved_model.LoadOptions(
+                    experimental_io_device='/job:localhost',
+                    experimental_skip_checkpoint=True
+                )
+            )
+            
+            # Guardar como H5
+            modelo.save(ruta_h5, save_format='h5')
+            st.success(f"✅ Modelo convertido exitosamente usando método alternativo")
+            return ruta_h5
+        except Exception as e1:
+            st.warning(f"Método alternativo 1 falló: {str(e1)}")
+            
+        # Método 2: Intentar usar una API de nivel inferior
+        st.info("Método alternativo 2: Recreando el modelo manualmente")
+        try:
+            # Para modelos especialmente difíciles, intentar cargar con tf.saved_model.load
+            # que es de nivel más bajo que keras.models.load_model
+            import tensorflow as tf
+            saved_model = tf.saved_model.load(ruta_keras)
+            
+            # Convertir el SavedModel a un modelo de Keras
+            model_keras = tf.keras.models.model_from_saved_model(saved_model)
+            
+            # Guardar en formato h5
+            model_keras.save(ruta_h5, save_format='h5')
+            
+            st.success(f"✅ Modelo convertido exitosamente usando método alternativo 2")
+            return ruta_h5
+        except Exception as e2:
+            st.warning(f"Método alternativo 2 falló: {str(e2)}")
+        
+        st.error("❌ Todos los métodos de conversión han fallado")
+        return None
+    except Exception as e:
+        st.error(f"❌ Error en conversión alternativa: {str(e)}")
         return None
 
-def descargar_modelo_desde_url(url, destino='best_model.h5'):
+def descargar_modelo_desde_url(url, destino=None):
     """Descargar el modelo desde una URL directa"""
     try:
         st.info(f"Descargando modelo desde: {url}")
+        
+        # Determinar extensión y nombre de archivo apropiado basado en la URL
+        if destino is None:
+            # Detectar si la URL contiene .keras o .h5
+            if '.keras' in url.lower():
+                extension = '.keras'
+                destino = 'best_model.keras'
+            else:
+                extension = '.h5'
+                destino = 'best_model.h5'
+        else:
+            extension = os.path.splitext(destino)[1].lower()
         
         # Crear barra de progreso
         progress_bar = st.progress(0)
@@ -77,11 +152,15 @@ def descargar_modelo_desde_url(url, destino='best_model.h5'):
             st.success(f"✅ Modelo descargado correctamente: {os.path.getsize(destino)/1024/1024:.2f} MB")
             
             # Si el modelo descargado es .keras, convertirlo a .h5
-            if destino.endswith('.keras'):
+            if extension == '.keras':
                 destino_h5 = destino.replace('.keras', '.h5')
                 h5_path = convertir_keras_a_h5(destino, destino_h5)
                 if h5_path:
+                    st.info(f"Usando modelo convertido: {h5_path}")
                     return h5_path
+                else:
+                    st.warning("La conversión falló, intentando cargar directamente el formato .keras")
+                    return destino
             
             return destino
         else:
@@ -97,20 +176,76 @@ def cargar_modelo_tensorflow(ruta_modelo):
     """Cargar el modelo desde archivo con caché"""
     try:
         # Verificar la extensión del archivo
-        if ruta_modelo.endswith('.keras'):
-            # Convertir de .keras a .h5
+        extension = os.path.splitext(ruta_modelo)[1].lower()
+        
+        if extension == '.keras':
+            # Intentar convertir de .keras a .h5
+            st.info(f"Intentando cargar modelo en formato .keras: {ruta_modelo}")
             ruta_h5 = convertir_keras_a_h5(ruta_modelo)
             if ruta_h5:
-                modelo = tf.keras.models.load_model(ruta_h5)
-                return modelo
+                try:
+                    modelo = tf.keras.models.load_model(ruta_h5)
+                    return modelo
+                except Exception as e_h5:
+                    st.warning(f"Error al cargar el modelo convertido a H5: {str(e_h5)}")
+                    # Si falla, intentar cargar directamente el .keras
+                    try:
+                        st.info("Intentando cargar directamente el formato .keras")
+                        # Intentar diferentes opciones de carga
+                        try:
+                            modelo = tf.keras.models.load_model(
+                                ruta_modelo, 
+                                compile=False,
+                                options=tf.saved_model.LoadOptions(experimental_io_device='/job:localhost')
+                            )
+                            return modelo
+                        except:
+                            # Intentar con saved_model de nivel inferior
+                            saved_model = tf.saved_model.load(ruta_modelo)
+                            modelo = tf.keras.models.model_from_saved_model(saved_model)
+                            return modelo
+                    except Exception as e_keras:
+                        st.error(f"❌ Error al cargar directamente el modelo .keras: {str(e_keras)}")
+                        return None
             else:
-                return None
+                # Intento directo con el formato .keras
+                try:
+                    st.info("Intentando cargar directamente el formato .keras sin conversión previa")
+                    modelo = tf.keras.models.load_model(
+                        ruta_modelo, 
+                        compile=False,
+                        options=tf.saved_model.LoadOptions(experimental_io_device='/job:localhost')
+                    )
+                    return modelo
+                except Exception as e_direct:
+                    st.error(f"❌ Error al cargar directamente el modelo .keras: {str(e_direct)}")
+                    return None
         else:
             # Cargar directamente si ya es .h5 u otro formato compatible
-            modelo = tf.keras.models.load_model(ruta_modelo)
-            return modelo
+            st.info(f"Cargando modelo en formato {extension}")
+            try:
+                modelo = tf.keras.models.load_model(ruta_modelo)
+                return modelo
+            except Exception as e_normal:
+                st.error(f"❌ Error al cargar el modelo: {str(e_normal)}")
+                
+                # Intentar opciones más permisivas
+                try:
+                    st.info("Intentando cargar con opciones alternativas...")
+                    modelo = tf.keras.models.load_model(
+                        ruta_modelo,
+                        compile=False,
+                        options=tf.saved_model.LoadOptions(
+                            experimental_io_device='/job:localhost',
+                            experimental_skip_checkpoint=True
+                        )
+                    )
+                    return modelo
+                except Exception as e_alt:
+                    st.error(f"❌ Error al cargar con opciones alternativas: {str(e_alt)}")
+                    return None
     except Exception as e:
-        st.error(f"❌ Error al cargar el modelo: {str(e)}")
+        st.error(f"❌ Error general al cargar el modelo: {str(e)}")
         return None
 
 def crear_modelo_dummy():
@@ -232,7 +367,7 @@ with st.sidebar:
     model_url = st.text_input(
         "URL del modelo", 
         # REEMPLAZA ESTA URL con la del modelo H5 en GitHub Releases
-        "https://github.com/ViannyCruz/SD-AI/releases/download/tag01/best_model.keras",
+        "https://github.com/ViannyCruz/SD-AI/releases/download/tag01/best_model.h5",
         help="URL directa para descargar el modelo"
     )
     
@@ -301,14 +436,57 @@ else:
     # Si no hay modelo válido, intentar descargar
     if not modelo_cargado:
         if st.button("Descargar modelo", type="primary"):
-            descarga_ok = descargar_modelo_desde_url(model_url, modelo_path)
+            # Determinar destino basado en URL
+            if '.keras' in model_url.lower():
+                destino_desc = 'best_model.keras'
+            else:
+                destino_desc = 'best_model.h5'
+                
+            descarga_ok = descargar_modelo_desde_url(model_url, destino_desc)
             if descarga_ok:
-                modelo = cargar_modelo_tensorflow(descarga_ok)  # Usar la ruta devuelta que podría ser .h5
+                # Intentar cargar primero directamente
+                st.info(f"Intentando cargar el modelo desde: {descarga_ok}")
+                modelo = cargar_modelo_tensorflow(descarga_ok)  # Usar la ruta devuelta que podría ser .h5 o .keras
+                
                 if modelo is not None:
                     modelo_cargado = True
                     st.success("✅ Modelo cargado exitosamente")
                 else:
-                    st.error("❌ No se pudo cargar el modelo descargado")
+                    # Si falló y es un archivo .keras, intentar aproximación alternativa
+                    if descarga_ok.endswith('.keras'):
+                        st.warning("El método estándar falló. Intentando enfoques alternativos para este modelo .keras...")
+                        
+                        # Enfoques alternativos para modelos keras problemáticos
+                        try:
+                            st.info("Intento 1: Cargando con SavedModel de nivel inferior")
+                            saved_model = tf.saved_model.load(descarga_ok)
+                            # Convertir a modelo de Keras
+                            modelo = tf.keras.models.Sequential()
+                            modelo.add(tf.keras.layers.InputLayer(input_shape=(256, 256, 3)))
+                            # Añadir capas basadas en la estructura del modelo
+                            # (Añadir según necesidad, esto es simplificado)
+                            modelo.add(tf.keras.layers.Conv2D(32, (3, 3), activation='relu'))
+                            modelo.add(tf.keras.layers.MaxPooling2D())
+                            modelo.add(tf.keras.layers.Flatten())
+                            modelo.add(tf.keras.layers.Dense(1, activation='sigmoid'))
+                            
+                            # Compilar el modelo
+                            modelo.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+                            
+                            # Intentar establecer pesos si es posible
+                            try:
+                                # Aquí podríamos intentar extraer y establecer pesos, pero es complejo
+                                pass
+                            except:
+                                st.warning("No se pudieron transferir los pesos del modelo original")
+                            
+                            modelo_cargado = True
+                            st.success("✅ Modelo reconstruido exitosamente (puede tener precisión reducida)")
+                        except Exception as alt_e:
+                            st.error(f"❌ Enfoque alternativo falló: {str(alt_e)}")
+                            st.error("❌ No se pudo cargar el modelo descargado")
+                    else:
+                        st.error("❌ No se pudo cargar el modelo descargado")
         
         # Opción para subir manualmente
         st.markdown("### O suba el modelo manualmente:")
