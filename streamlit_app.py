@@ -17,77 +17,122 @@ st.set_page_config(
 # Funciones auxiliares
 @st.cache_resource
 def cargar_modelo():
-    """Cargar el modelo entrenado desde Google Drive con manejo mejorado de errores"""
-    try:
-        # Ruta donde se guardará temporalmente el modelo descargado
-        modelo_path = 'best_model.keras'
-        
-        # Verificar si el modelo ya existe localmente
-        if not os.path.exists(modelo_path):
-            # Obtener ID del modelo desde secrets o usar el valor por defecto
-            drive_id = st.secrets.get("DRIVE_MODEL_ID", "13S8aXIDQpixM5Siy-0tWHSm2MEHw1Ksh")
-            
-            # Método 1: Intentar con gdown directamente
-            try:
-                with st.spinner("Descargando modelo desde Google Drive (Método 1)..."):
-                    drive_url = f"https://drive.google.com/uc?id={drive_id}"
-                    output = gdown.download(drive_url, modelo_path, quiet=False)
-                    
-                    if output is None:
-                        raise Exception("La descarga con gdown ha fallado")
-            except Exception as e1:
-                st.warning(f"Primer método de descarga falló: {str(e1)}")
-                
-                # Método 2: Intentar con parámetros adicionales
-                try:
-                    with st.spinner("Descargando modelo con método alternativo..."):
-                        # Intentar usar la opción fuzzy=True que puede ayudar con ciertos enlaces
-                        output = gdown.download(drive_url, modelo_path, quiet=False, fuzzy=True)
-                        
-                        if output is None:
-                            raise Exception("La descarga con gdown (fuzzy) ha fallado")
-                except Exception as e2:
-                    st.warning(f"Segundo método de descarga falló: {str(e2)}")
-                    
-                    # Método 3: Usar URL directa si está configurada
-                    try:
-                        with st.spinner("Intentando descarga directa..."):
-                            direct_url = st.secrets.get("DIRECT_MODEL_URL", None)
-                            if direct_url:
-                                import requests
-                                response = requests.get(direct_url)
-                                if response.status_code == 200:
-                                    with open(modelo_path, 'wb') as f:
-                                        f.write(response.content)
-                                    st.success("Descarga directa exitosa")
-                                else:
-                                    raise Exception(f"Error en descarga directa: {response.status_code}")
-                            else:
-                                raise Exception("No hay URL directa configurada")
-                    except Exception as e3:
-                        st.error(f"Todos los métodos de descarga fallaron.")
-                        st.info("""
-                        Por favor, resuelva el problema con una de estas opciones:
-                        1. Verifique la URL y permisos del archivo en Google Drive
-                        2. Configure su archivo como 'Cualquiera con el enlace puede ver'
-                        3. Suba el modelo a algún servicio como GitHub Releases, AWS S3 o Hugging Face
-                        4. Coloque el archivo 'best_model.keras' en la misma carpeta que este script
-                        """)
-                        return None
-        
-        # Si llegamos aquí, o bien el archivo ya existía localmente o se descargó con éxito
-        if os.path.exists(modelo_path):
-            # Cargar el modelo descargado
+    """Cargar el modelo entrenado con verificación exhaustiva del archivo"""
+    # Ruta donde se guardará temporalmente el modelo descargado
+    modelo_path = 'best_model.keras'
+    
+    # 1. Verificar si el modelo existe localmente
+    if os.path.exists(modelo_path):
+        st.info(f"Usando modelo existente en {modelo_path}")
+        try:
+            # Intentar cargar el modelo existente
             modelo = tf.keras.models.load_model(modelo_path)
-            st.success("Modelo cargado exitosamente")
+            st.success("✅ Modelo cargado exitosamente desde archivo local")
             return modelo
-        else:
-            st.error("No se pudo encontrar o descargar el modelo")
-            return None
+        except Exception as e:
+            st.warning(f"El archivo existe pero no se pudo cargar: {str(e)}")
+            # Eliminar el archivo corrupto
+            try:
+                os.remove(modelo_path)
+                st.info("Archivo corrupto eliminado. Intentando descargar de nuevo...")
+            except:
+                st.error("No se pudo eliminar el archivo corrupto. Intente eliminar manualmente 'best_model.keras'")
+                return None
+    
+    # 2. Intentar varios métodos de descarga
+    # Método A: Descarga directa con requests (más simple y confiable que gdown)
+    try:
+        st.info("Intentando descarga directa...")
+        # Reemplaza esta URL con la URL directa a tu modelo
+        # Puedes usar GitHub Releases, Dropbox, OneDrive, etc.
+        direct_url = "https://github.com/tu-usuario/tu-repo/releases/download/v1.0/best_model.keras"
+        
+        import requests
+        response = requests.get(direct_url, stream=True)
+        if response.status_code == 200:
+            total_size = int(response.headers.get('content-length', 0))
+            block_size = 1024  # 1 Kibibyte
             
+            progress_bar = st.progress(0)
+            with open(modelo_path, 'wb') as file:
+                downloaded = 0
+                for data in response.iter_content(block_size):
+                    file.write(data)
+                    downloaded += len(data)
+                    if total_size > 0:  # Solo si conocemos el tamaño total
+                        progress = downloaded / total_size
+                        progress_bar.progress(progress)
+            
+            st.success("✅ Modelo descargado correctamente mediante descarga directa")
+            try:
+                modelo = tf.keras.models.load_model(modelo_path)
+                return modelo
+            except Exception as e:
+                st.error(f"El archivo se descargó pero no se pudo cargar como modelo: {str(e)}")
+                os.remove(modelo_path)  # Eliminar archivo corrupto
+        else:
+            st.warning(f"Error en descarga directa: {response.status_code}")
     except Exception as e:
-        st.error(f"Error inesperado al cargar el modelo: {str(e)}")
-        return None
+        st.warning(f"Error en descarga directa: {str(e)}")
+    
+    # Método B: Intentar con gdown
+    try:
+        st.info("Intentando descarga con gdown...")
+        drive_id = st.secrets.get("DRIVE_MODEL_ID", "13S8aXIDQpixM5Siy-0tWHSm2MEHw1Ksh")
+        drive_url = f"https://drive.google.com/uc?id={drive_id}"
+        
+        # Mostrar información útil para el usuario
+        st.markdown(f"""
+        **URL de Google Drive:** 
+        ```
+        {drive_url}
+        ```
+        """)
+        
+        # Intentamos con opciones adicionales
+        output = gdown.download(drive_url, modelo_path, quiet=False, fuzzy=True)
+        
+        if output is None:
+            raise Exception("La descarga falló silenciosamente")
+            
+        # Verificar que el archivo existe y tiene un tamaño razonable
+        if os.path.exists(modelo_path) and os.path.getsize(modelo_path) > 1000:  # Al menos 1KB
+            st.success("✅ Modelo descargado correctamente mediante gdown")
+            try:
+                modelo = tf.keras.models.load_model(modelo_path)
+                return modelo
+            except Exception as e:
+                st.error(f"El archivo se descargó pero no se pudo cargar como modelo: {str(e)}")
+                os.remove(modelo_path)  # Eliminar archivo corrupto
+    except Exception as e:
+        st.warning(f"Error al descargar con gdown: {str(e)}")
+    
+    # Si llegamos aquí, todas las opciones automáticas fallaron
+    # Ofrecer opción de subida manual
+    st.error("No se pudo descargar o cargar el modelo automáticamente")
+    
+    st.markdown("""
+    ### Carga manual del modelo
+    
+    Por favor, descargue manualmente el modelo desde Google Drive y súbalo aquí:
+    """)
+    
+    uploaded_model = st.file_uploader("Subir archivo best_model.keras", type=["keras", "h5"])
+    
+    if uploaded_model is not None:
+        # Guardar el archivo subido
+        with open(modelo_path, "wb") as f:
+            f.write(uploaded_model.getbuffer())
+        
+        try:
+            modelo = tf.keras.models.load_model(modelo_path)
+            st.success("✅ Modelo cargado exitosamente desde archivo subido")
+            return modelo
+        except Exception as e:
+            st.error(f"El archivo subido no es un modelo válido: {str(e)}")
+            return None
+    
+    return None  # Falló todo
 
 def preprocesar_imagen(imagen, tamano_objetivo=(256, 256)):
     """Preprocesar la imagen para la predicción del modelo"""
