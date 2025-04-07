@@ -1,120 +1,172 @@
 import streamlit as st
-import os
 import requests
-import zipfile
-import shutil
+import os
+import time
 from tensorflow.keras.models import load_model
 import numpy as np
+import shutil
 
-# Configuration
-MODEL_URL = "https://drive.google.com/uc?id=13S8aXIDQpixM5Siy-0tWHSm2MEHw1Ksh"
-MODEL_DIR = os.path.abspath(os.path.dirname(__file__))
-MODEL_PATH = os.path.join(MODEL_DIR, "loaded_model.keras")
-TEMP_PATH = os.path.join(MODEL_DIR, "temp_model.keras")
+# Configuration - ADJUST THESE FOR YOUR MODEL
+MODEL_URL = "https://drive.google.com/uc?id=13S8aXIDQpixM5Siy-0tWHSm2MEHw1Ksh"  # Your Google Drive link
+MODEL_FILENAME = "my_model.keras"  # Expected filename
+MODEL_PATH = os.path.abspath(MODEL_FILENAME)
+TEMP_PATH = os.path.abspath("temp_download.keras")
+EXPECTED_SIZE = 310 * 1024 * 1024  # 310MB (adjust to your exact size)
+MIN_ACCEPTABLE_SIZE = 300 * 1024 * 1024  # 300MB minimum
 
-def delete_existing_files():
-    """Remove any existing model files"""
+def clean_up():
+    """Remove temporary files"""
     for path in [MODEL_PATH, TEMP_PATH]:
         if os.path.exists(path):
             os.remove(path)
 
-def download_with_verification():
-    """Download with integrity checks"""
-    delete_existing_files()
+def download_with_retry():
+    """Robust download with size verification"""
+    clean_up()
     
     try:
-        # Download to temporary location
-        response = requests.get(MODEL_URL, stream=True)
-        response.raise_for_status()
-        
-        with open(TEMP_PATH, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-        
-        # Verify file integrity
-        if not os.path.exists(TEMP_PATH):
-            return False, "Download failed - no file created"
+        with st.spinner(f"🚀 Downloading {MODEL_FILENAME} (310MB)..."):
+            # Create session for better performance
+            session = requests.Session()
+            headers = {
+                "User-Agent": "Mozilla/5.0",
+                "Range": "bytes=0-"
+            }
             
-        file_size = os.path.getsize(TEMP_PATH)
-        if file_size < 1000000:  # 1MB minimum
-            return False, f"File too small ({file_size/1024:.1f}KB)"
+            # Initial request to check size
+            response = session.head(MODEL_URL, headers=headers)
+            remote_size = int(response.headers.get('content-length', 0))
             
-        # Verify ZIP structure
-        if not zipfile.is_zipfile(TEMP_PATH):
-            return False, "Downloaded file is not a valid ZIP archive"
+            if remote_size < MIN_ACCEPTABLE_SIZE:
+                st.error(f"❌ Remote file too small ({remote_size/1024/1024:.1f}MB)")
+                return False
             
-        # Move to final location
-        shutil.move(TEMP_PATH, MODEL_PATH)
-        return True, f"Download successful! Size: {file_size/1024/1024:.1f}MB"
-        
+            # Download with progress
+            response = session.get(MODEL_URL, stream=True)
+            response.raise_for_status()
+            
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            speed_text = st.empty()
+            start_time = time.time()
+            
+            downloaded = 0
+            with open(TEMP_PATH, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=32768):  # 32KB chunks
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        elapsed = time.time() - start_time
+                        
+                        # Update UI every 100MB or 2 seconds
+                        if downloaded % (100 * 1024 * 1024) == 0 or elapsed > 2:
+                            progress = min(100, downloaded / EXPECTED_SIZE * 100)
+                            speed = downloaded / (1024 * 1024 * elapsed) if elapsed > 0 else 0
+                            remaining = (EXPECTED_SIZE - downloaded) / (1024 * 1024 * speed) if speed > 0 else 0
+                            
+                            progress_bar.progress(int(progress))
+                            status_text.text(
+                                f"📥 Downloaded: {downloaded/1024/1024:.1f}MB/{EXPECTED_SIZE/1024/1024:.1f}MB\n"
+                                f"⏱️ Elapsed: {elapsed:.1f}s"
+                            )
+                            speed_text.text(
+                                f"🚀 Speed: {speed:.2f} MB/s\n"
+                                f"⏳ Remaining: {remaining:.1f}s" if remaining > 0 else ""
+                            )
+            
+            # Final verification
+            actual_size = os.path.getsize(TEMP_PATH)
+            if abs(actual_size - EXPECTED_SIZE) > 5 * 1024 * 1024:  # Allow 5MB variance
+                st.error(f"Size mismatch! Expected ~{EXPECTED_SIZE/1024/1024:.1f}MB, got {actual_size/1024/1024:.1f}MB")
+                return False
+                
+            # Move to final location
+            shutil.move(TEMP_PATH, MODEL_PATH)
+            st.success(f"✅ Download complete! Size: {actual_size/1024/1024:.1f}MB")
+            return True
+            
     except Exception as e:
-        return False, f"Download error: {str(e)}"
+        st.error(f"❌ Download failed: {str(e)}")
+        clean_up()
+        return False
 
-def load_model_safely():
-    """Attempt to load model with validation"""
+def verify_model():
+    """Thorough model verification"""
+    if not os.path.exists(MODEL_PATH):
+        return False, "File not found"
+    
+    file_size = os.path.getsize(MODEL_PATH)
+    if file_size < MIN_ACCEPTABLE_SIZE:
+        return False, f"File too small ({file_size/1024/1024:.1f}MB)"
+    
+    # Quick check for Keras format
     try:
-        # Verify ZIP structure first
-        if not zipfile.is_zipfile(MODEL_PATH):
-            return None, "File is not a valid Keras ZIP archive"
-            
-        # Try loading
-        model = load_model(MODEL_PATH)
-        return model, "Model loaded successfully"
-    except Exception as e:
-        return None, f"Load failed: {str(e)}"
+        with open(MODEL_PATH, 'rb') as f:
+            header = f.read(4)
+            if header != b'PK\x03\x04':  # ZIP signature
+                return False, "Not a valid .keras ZIP file"
+    except:
+        return False, "File read error"
+    
+    return True, f"✅ Valid .keras file ({file_size/1024/1024:.1f}MB)"
 
 # Streamlit UI
-st.title("🛠️ CNN Model Loader - Repair Mode")
+st.set_page_config(layout="wide")
+st.title(f"🧠 {MODEL_FILENAME} Loader (310MB)")
 
-# Current status
-st.header("Current Status")
+# Download section
+st.header("1. Download Model")
+if st.button("🔄 Download Model (310MB)"):
+    if download_with_retry():
+        st.balloons()
+
+# Verification section
+st.header("2. Verify Model")
 if os.path.exists(MODEL_PATH):
     file_size = os.path.getsize(MODEL_PATH)
-    st.write(f"File exists at:\n`{MODEL_PATH}`")
-    st.write(f"Size: {file_size/1024/1024:.1f}MB")
+    st.write(f"📁 File location: `{MODEL_PATH}`")
+    st.write(f"📏 File size: {file_size/1024/1024:.1f}MB")
     
-    # Verify file
-    is_zip = zipfile.is_zipfile(MODEL_PATH)
-    st.write(f"Valid ZIP file: {'✅' if is_zip else '❌'}")
-    
-    if not is_zip:
-        st.error("Critical: File is not a valid .keras ZIP archive")
-else:
-    st.warning("No model file found")
-
-# Repair actions
-st.header("Repair Steps")
-
-if st.button("🔄 Redownload Model"):
-    st.warning("This will delete and re-download the model")
-    success, message = download_with_verification()
-    if success:
+    is_valid, message = verify_model()
+    if is_valid:
         st.success(message)
-        st.balloons()
+        
+        # Load test
+        if st.button("🧪 Test Model Loading"):
+            try:
+                with st.spinner("Loading model..."):
+                    model = load_model(MODEL_PATH)
+                    st.success("✅ Model loaded successfully!")
+                    
+                    # Show model info
+                    st.subheader("Model Information")
+                    cols = st.columns(2)
+                    with cols[0]:
+                        st.write("**Input shape:**", model.input_shape)
+                    with cols[1]:
+                        st.write("**Output shape:**", model.output_shape)
+                    
+                    # Test prediction
+                    st.subheader("Prediction Test")
+                    try:
+                        dummy_input = np.random.rand(*model.input_shape[1:]).astype(np.float32)
+                        prediction = model.predict(np.expand_dims(dummy_input, axis=0))
+                        st.success(f"🎉 Prediction successful! Output shape: {prediction.shape}")
+                    except Exception as e:
+                        st.error(f"Prediction failed: {str(e)}")
+                        
+            except Exception as e:
+                st.error(f"❌ Load failed: {str(e)}")
     else:
         st.error(message)
+else:
+    st.warning("No model file found - please download first")
 
-if st.button("🧪 Test Model Loading"):
-    if os.path.exists(MODEL_PATH):
-        model, message = load_model_safely()
-        if model:
-            st.success(message)
-            
-            # Test prediction
-            try:
-                input_shape = model.input_shape[1:]
-                dummy_input = np.random.rand(1, *input_shape).astype(np.float32)
-                prediction = model.predict(dummy_input)
-                st.success(f"Prediction successful! Output shape: {prediction.shape}")
-            except Exception as e:
-                st.error(f"Prediction failed: {str(e)}")
-        else:
-            st.error(message)
-    else:
-        st.error("Please download the model first")
-
-# Debug information
-st.header("Debug Info")
-st.write(f"Working directory: `{os.getcwd()}`")
-st.write(f"Files in directory: `{os.listdir()}`")
-st.write(f"Python version: `{sys.version}`")
+# Debug info
+st.header("🛠️ Debug Information")
+st.code(f"""
+Working directory: {os.getcwd()}
+Files present: {os.listdir()}
+Expected size: {EXPECTED_SIZE/1024/1024:.1f}MB
+Model path: {MODEL_PATH}
+""")
