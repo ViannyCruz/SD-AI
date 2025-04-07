@@ -2,90 +2,226 @@ import streamlit as st
 import gdown
 from tensorflow.keras.models import load_model
 import numpy as np
-from PIL import Image
 import os
+import time
+from humanize import naturalsize
 
-# App title
+# App configuration
+st.set_page_config(page_title="CNN Model Loader Test", layout="wide")
 st.title("🔍 CNN Model Loader Test")
-st.markdown("This app tests loading a Keras model from Google Drive")
+st.markdown("Testing model loading from Google Drive")
 
-# Configuration - Using your specific URL
+# Constants
 FILE_ID = "13S8aXIDQpixM5Siy-0tWHSm2MEHw1Ksh"
 MODEL_URL = f"https://drive.google.com/uc?id={FILE_ID}"
 MODEL_PATH = "loaded_model.keras"
+CHUNK_SIZE = 32768  # For download progress tracking
 
-def download_model():
-    """Download model from Google Drive with progress"""
-    if os.path.exists(MODEL_PATH):
-        st.info("Model file already exists, skipping download.")
-        return
-    
-    with st.spinner('Downloading model from Google Drive...'):
-        progress_bar = st.progress(0)
+def download_with_progress(url, output):
+    """Enhanced download function with better progress tracking"""
+    try:
+        import requests
+        from tqdm import tqdm
         
-        def update_progress(current, total, width=80):
-            progress = int(current / total * 100)
-            progress_bar.progress(progress)
+        st.info(f"Starting download from:\n{url}")
+        
+        response = requests.get(url, stream=True)
+        response.raise_for_status()
+        
+        total_size = int(response.headers.get('content-length', 0))
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        download_speed = st.empty()
+        start_time = time.time()
+        
+        with open(output, 'wb') as f:
+            downloaded = 0
+            for chunk in tqdm(response.iter_content(chunk_size=CHUNK_SIZE)):
+                if chunk:
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    
+                    # Update progress
+                    elapsed = time.time() - start_time
+                    progress = int(downloaded / total_size * 100)
+                    speed = downloaded / (1024 * 1024 * elapsed) if elapsed > 0 else 0
+                    
+                    progress_bar.progress(progress)
+                    status_text.text(f"Downloaded: {naturalsize(downloaded)} / {naturalsize(total_size)}")
+                    download_speed.text(f"Speed: {speed:.2f} MB/s")
+        
+        progress_bar.empty()
+        status_text.empty()
+        download_speed.empty()
+        
+        if os.path.exists(output):
+            actual_size = os.path.getsize(output)
+            if actual_size == total_size:
+                st.success(f"Download complete! File saved as: {output}")
+                return True
+            else:
+                st.error(f"Download incomplete! Expected {total_size} bytes, got {actual_size}")
+                os.remove(output)
+                return False
+        else:
+            st.error("Download failed - no file was created")
+            return False
+            
+    except Exception as e:
+        st.error(f"Download error: {str(e)}")
+        if os.path.exists(output):
+            os.remove(output)
+        return False
+
+def verify_model_integrity(filepath):
+    """Check if the file appears to be a valid Keras model"""
+    try:
+        # Basic checks before attempting to load
+        if not os.path.exists(filepath):
+            return False, "File does not exist"
+            
+        min_keras_size = 1024  # Keras models are typically >1KB
+        file_size = os.path.getsize(filepath)
+        if file_size < min_keras_size:
+            return False, f"File too small ({file_size} bytes) to be a valid Keras model"
+            
+        # Check for Keras file signature (not perfect but helpful)
+        with open(filepath, 'rb') as f:
+            header = f.read(4)
+            if header == b'PK\x03\x04':  # ZIP signature (for .keras format)
+                return True, "File appears valid (ZIP header found)"
+            elif b'keras' in header:
+                return True, "File appears valid (keras signature found)"
+            
+        return True, "File exists but format uncertain"
+    except Exception as e:
+        return False, f"Integrity check failed: {str(e)}"
+
+def load_model_safely(filepath):
+    """Attempt to load model with multiple fallbacks"""
+    try:
+        # Try standard load first
+        model = load_model(filepath)
+        return model, "Standard load successful"
+    except Exception as e:
+        st.warning(f"Standard load failed: {str(e)}")
         
         try:
-            gdown.download(
-                MODEL_URL,
-                MODEL_PATH,
-                quiet=True,
-                fuzzy=True,
-                progress=update_progress
-            )
-            progress_bar.empty()
-            st.success("Model downloaded successfully!")
+            # Try loading without compilation
+            model = load_model(filepath, compile=False)
+            return model, "Load successful (compile=False)"
         except Exception as e:
-            st.error(f"Download failed: {str(e)}")
-            progress_bar.empty()
-
-def test_model_loading():
-    """Test if the model loads correctly"""
-    try:
-        with st.spinner('Loading model...'):
-            model = load_model(MODEL_PATH)
-        st.success("✅ Model loaded successfully!")
-        return model
-    except Exception as e:
-        st.error(f"❌ Model loading failed: {str(e)}")
-        st.info("Common fixes:")
-        st.markdown("""
-        - Make sure TensorFlow version matches the model's version
-        - Check if the file downloaded completely (current size: {:.1f}MB)
-        - The file might be corrupted during download - try downloading manually
-        """.format(os.path.getsize(MODEL_PATH)/(1024*1024) if os.path.exists(MODEL_PATH) else 0))
-        return None
-
-def test_model_prediction(model):
-    """Test making a dummy prediction"""
-    try:
-        # Try common image input shapes
-        test_shapes = [
-            (1, 224, 224, 3),  # Common image size
-            (1, 128, 128, 3),  # Smaller image
-            (1, 256, 256, 3)   # Larger image
-        ]
-        
-        successful = False
-        for shape in test_shapes:
+            st.warning(f"Load with compile=False failed: {str(e)}")
+            
             try:
-                dummy_input = np.random.rand(*shape).astype(np.float32)
-                with st.spinner(f'Testing prediction with shape {shape}...'):
-                    prediction = model.predict(dummy_input)
-                
-                st.success(f"🎉 Prediction successful with shape {shape}!")
-                st.code(f"Output shape: {prediction.shape}\nFirst values: {prediction[0].flatten()[:5]}")
-                successful = True
-                break
+                # Try custom objects workaround
+                from tensorflow.keras.layers import InputLayer
+                custom_objects = {'InputLayer': InputLayer}
+                model = load_model(filepath, custom_objects=custom_objects)
+                return model, "Load successful with custom objects"
             except Exception as e:
-                continue
-                
-        if not successful:
-            st.error("❌ Couldn't find compatible input shape. Please specify your model's expected input shape.")
-    except Exception as e:
-        st.error(f"❌ Prediction failed: {str(e)}")
+                return None, f"All load attempts failed: {str(e)}"
 
-# Main app flow
-st.header("1. Model Download")
+# Main test flow
+with st.expander("⚙️ Test Configuration", expanded=True):
+    st.write(f"**Model URL:** `{MODEL_URL}`")
+    st.write(f"**Local path:** `{MODEL_PATH}`")
+    
+    if st.button("🔄 Reset Test (Delete Local Copy)"):
+        if os.path.exists(MODEL_PATH):
+            os.remove(MODEL_PATH)
+            st.success("Local model deleted")
+        else:
+            st.info("No local model to delete")
+
+st.header("1️⃣ Model Download")
+if not os.path.exists(MODEL_PATH):
+    if st.button("⬇️ Download Model"):
+        if download_with_progress(MODEL_URL, MODEL_PATH):
+            # Verify download integrity
+            is_valid, message = verify_model_integrity(MODEL_PATH)
+            if is_valid:
+                st.success(f"✅ Model verification passed: {message}")
+            else:
+                st.error(f"❌ Model verification failed: {message}")
+else:
+    st.success("Model already downloaded")
+    file_size = os.path.getsize(MODEL_PATH)
+    st.write(f"**File size:** {naturalsize(file_size)}")
+    is_valid, message = verify_model_integrity(MODEL_PATH)
+    if is_valid:
+        st.success(f"✅ {message}")
+    else:
+        st.error(f"❌ {message}")
+
+st.header("2️⃣ Model Loading")
+if os.path.exists(MODEL_PATH):
+    if st.button("🔧 Attempt Model Load"):
+        model, message = load_model_safely(MODEL_PATH)
+        if model is not None:
+            st.success(message)
+            
+            # Display model info
+            st.subheader("Model Information")
+            cols = st.columns(2)
+            with cols[0]:
+                st.write("**Input shape:**", model.input_shape)
+            with cols[1]:
+                st.write("**Output shape:**", model.output_shape)
+            
+            st.subheader("Layer Summary")
+            with st.expander("Show layer details"):
+                try:
+                    from io import StringIO
+                    import sys
+                    
+                    buffer = StringIO()
+                    sys.stdout = buffer
+                    model.summary(print_fn=lambda x: st.text(x) or x)
+                    sys.stdout = sys.__stdout__
+                except Exception as e:
+                    st.warning(f"Couldn't show summary: {str(e)}")
+            
+            # Prediction test
+            st.header("3️⃣ Prediction Test")
+            input_shape = model.input_shape[1:]  # Get input shape (excluding batch)
+            dummy_input = np.random.rand(1, *input_shape).astype(np.float32)
+            
+            with st.spinner(f"Making prediction with input shape {input_shape}..."):
+                try:
+                    prediction = model.predict(dummy_input)
+                    st.success(f"🎉 Prediction successful! Output shape: {prediction.shape}")
+                    
+                    cols = st.columns(2)
+                    with cols[0]:
+                        st.write("**Input values sample:**")
+                        st.code(dummy_input[0].flatten()[:5])
+                    with cols[1]:
+                        st.write("**Output values sample:**")
+                        st.code(prediction[0].flatten()[:5])
+                except Exception as e:
+                    st.error(f"Prediction failed: {str(e)}")
+        else:
+            st.error(message)
+else:
+    st.warning("No model file available - download first")
+
+st.markdown("""
+---
+### Troubleshooting Guide
+
+1. **Download Fails**
+   - Verify the file is shared publicly (anyone with the link)
+   - Check your internet connection
+   - Try manual download: [Download Link](https://drive.google.com/uc?id=13S8aXIDQpixM5Siy-0tWHSm2MEHw1Ksh)
+
+2. **Load Fails**
+   - Ensure TensorFlow version matches training environment
+   - Try different loading methods (shown in code)
+   - Check for custom layers that need registration
+
+3. **Prediction Fails**
+   - Verify input shape matches model expectations
+   - Check if preprocessing is needed
+   - Test with actual input data instead of random values
+""")
