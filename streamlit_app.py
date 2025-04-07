@@ -80,27 +80,44 @@ def download_with_progress(url, output):
         return False
 
 def verify_model_integrity(filepath):
-    """Check if the file appears to be a valid Keras model"""
+    """Enhanced verification with more thorough checks"""
     try:
+        # Basic file existence check
         if not os.path.exists(filepath):
             return False, "File does not exist"
             
-        min_keras_size = 1024  # Keras models are typically >1KB
+        # Size validation (Keras models are typically >1KB)
         file_size = os.path.getsize(filepath)
-        if file_size < min_keras_size:
+        if file_size < 1024:
             return False, f"File too small ({format_size(file_size)}) to be a valid Keras model"
-            
+        
+        # First check: Attempt to load with Keras (most reliable)
+        try:
+            test_model = load_model(filepath, compile=False)
+            return True, "✅ Valid Keras model (verified by loading)"
+        except:
+            pass  # Continue with other checks if loading fails
+        
+        # Second check: File signature validation
         with open(filepath, 'rb') as f:
-            header = f.read(4)
-            if header == b'PK\x03\x04':  # ZIP signature (for .keras format)
-                return True, "File appears valid (ZIP header found)"
-            elif b'keras' in header:
-                return True, "File appears valid (keras signature found)"
+            header = f.read(100)  # Read more bytes for better detection
             
-        return True, "File exists but format uncertain"
+            # Check for Keras .h5 format signature
+            if header.startswith(b'\x89HDF'):
+                return True, "⚠️ File appears to be HDF5 format (.h5)"
+                
+            # Check for .keras zip format
+            if header.startswith(b'PK\x03\x04'):
+                return True, "⚠️ File appears to be .keras zip format"
+                
+            # Check for SavedModel directory structure
+            if os.path.isdir(filepath) and 'saved_model.pb' in os.listdir(filepath):
+                return True, "⚠️ Appears to be SavedModel format"
+        
+        return True, "⚠️ File exists but format uncertain (could still be valid)"
+        
     except Exception as e:
-        return False, f"Integrity check failed: {str(e)}"
-
+        return False, f"❌ Verification error: {str(e)}"
 def load_model_safely(filepath):
     """Attempt to load model with multiple fallbacks"""
     try:
