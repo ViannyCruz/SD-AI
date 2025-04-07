@@ -4,8 +4,9 @@ import numpy as np
 from PIL import Image
 from tensorflow.keras.preprocessing.image import img_to_array
 import matplotlib.pyplot as plt
-import gdown
 import os
+import requests
+from io import BytesIO
 
 # Configuración de la página
 st.set_page_config(
@@ -14,125 +15,92 @@ st.set_page_config(
     layout="wide"
 )
 
-# Funciones auxiliares
-@st.cache_resource
-def cargar_modelo():
-    """Cargar el modelo entrenado con verificación exhaustiva del archivo"""
-    # Ruta donde se guardará temporalmente el modelo descargado
-    modelo_path = 'best_model.keras'
-    
-    # 1. Verificar si el modelo existe localmente
-    if os.path.exists(modelo_path):
-        st.info(f"Usando modelo existente en {modelo_path}")
-        try:
-            # Intentar cargar el modelo existente
-            modelo = tf.keras.models.load_model(modelo_path)
-            st.success("✅ Modelo cargado exitosamente desde archivo local")
-            return modelo
-        except Exception as e:
-            st.warning(f"El archivo existe pero no se pudo cargar: {str(e)}")
-            # Eliminar el archivo corrupto
-            try:
-                os.remove(modelo_path)
-                st.info("Archivo corrupto eliminado. Intentando descargar de nuevo...")
-            except:
-                st.error("No se pudo eliminar el archivo corrupto. Intente eliminar manualmente 'best_model.keras'")
-                return None
-    
-    # 2. Intentar varios métodos de descarga
-    # Método A: Descarga directa con requests (más simple y confiable que gdown)
+# ==========================================
+# FUNCIONES DE CARGA DE MODELO MEJORADAS
+# ==========================================
+
+def descargar_modelo_desde_url(url, destino='best_model.h5'):
+    """Descargar el modelo desde una URL directa"""
     try:
-        st.info("Intentando descarga directa...")
-        # Reemplaza esta URL con la URL directa a tu modelo
-        # Puedes usar GitHub Releases, Dropbox, OneDrive, etc.
-        direct_url = "https://github.com/tu-usuario/tu-repo/releases/download/v1.0/best_model.keras"
+        st.info(f"Descargando modelo desde: {url}")
         
-        import requests
-        response = requests.get(direct_url, stream=True)
-        if response.status_code == 200:
-            total_size = int(response.headers.get('content-length', 0))
-            block_size = 1024  # 1 Kibibyte
+        # Crear barra de progreso
+        progress_bar = st.progress(0)
+        
+        # Descargar con requests
+        response = requests.get(url, stream=True)
+        if response.status_code != 200:
+            st.error(f"Error al descargar: código {response.status_code}")
+            return False
             
-            progress_bar = st.progress(0)
-            with open(modelo_path, 'wb') as file:
+        # Obtener tamaño total si está disponible
+        total_size = int(response.headers.get('content-length', 0))
+        block_size = 1024  # 1 KB
+        
+        # Guardar el archivo mientras se descarga
+        with open(destino, 'wb') as file:
+            if total_size == 0:  # No se conoce el tamaño
+                file.write(response.content)
+                progress_bar.progress(1.0)
+            else:
                 downloaded = 0
                 for data in response.iter_content(block_size):
                     file.write(data)
                     downloaded += len(data)
-                    if total_size > 0:  # Solo si conocemos el tamaño total
-                        progress = downloaded / total_size
-                        progress_bar.progress(progress)
-            
-            st.success("✅ Modelo descargado correctamente mediante descarga directa")
-            try:
-                modelo = tf.keras.models.load_model(modelo_path)
-                return modelo
-            except Exception as e:
-                st.error(f"El archivo se descargó pero no se pudo cargar como modelo: {str(e)}")
-                os.remove(modelo_path)  # Eliminar archivo corrupto
+                    progress = min(1.0, downloaded / total_size)
+                    progress_bar.progress(progress)
+        
+        # Verificar que se haya guardado correctamente
+        if os.path.exists(destino) and os.path.getsize(destino) > 1000:  # Al menos 1KB
+            st.success(f"✅ Modelo descargado correctamente: {os.path.getsize(destino)/1024/1024:.2f} MB")
+            return True
         else:
-            st.warning(f"Error en descarga directa: {response.status_code}")
-    except Exception as e:
-        st.warning(f"Error en descarga directa: {str(e)}")
-    
-    # Método B: Intentar con gdown
-    try:
-        st.info("Intentando descarga con gdown...")
-        drive_id = st.secrets.get("DRIVE_MODEL_ID", "13S8aXIDQpixM5Siy-0tWHSm2MEHw1Ksh")
-        drive_url = f"https://drive.google.com/uc?id={drive_id}"
-        
-        # Mostrar información útil para el usuario
-        st.markdown(f"""
-        **URL de Google Drive:** 
-        ```
-        {drive_url}
-        ```
-        """)
-        
-        # Intentamos con opciones adicionales
-        output = gdown.download(drive_url, modelo_path, quiet=False, fuzzy=True)
-        
-        if output is None:
-            raise Exception("La descarga falló silenciosamente")
+            st.error("❌ Error: el archivo descargado parece estar incompleto o corrupto")
+            return False
             
-        # Verificar que el archivo existe y tiene un tamaño razonable
-        if os.path.exists(modelo_path) and os.path.getsize(modelo_path) > 1000:  # Al menos 1KB
-            st.success("✅ Modelo descargado correctamente mediante gdown")
-            try:
-                modelo = tf.keras.models.load_model(modelo_path)
-                return modelo
-            except Exception as e:
-                st.error(f"El archivo se descargó pero no se pudo cargar como modelo: {str(e)}")
-                os.remove(modelo_path)  # Eliminar archivo corrupto
     except Exception as e:
-        st.warning(f"Error al descargar con gdown: {str(e)}")
+        st.error(f"❌ Error durante la descarga: {str(e)}")
+        return False
+
+@st.cache_resource
+def cargar_modelo_tensorflow(ruta_modelo):
+    """Cargar el modelo desde archivo con caché"""
+    try:
+        modelo = tf.keras.models.load_model(ruta_modelo)
+        return modelo
+    except Exception as e:
+        st.error(f"❌ Error al cargar el modelo: {str(e)}")
+        return None
+
+def crear_modelo_dummy():
+    """Crear un modelo simple para pruebas cuando no se puede cargar el modelo real"""
+    from tensorflow.keras.models import Sequential
+    from tensorflow.keras.layers import Dense, Flatten, Conv2D, MaxPooling2D
     
-    # Si llegamos aquí, todas las opciones automáticas fallaron
-    # Ofrecer opción de subida manual
-    st.error("No se pudo descargar o cargar el modelo automáticamente")
+    # Crear un modelo CNN simple
+    modelo = Sequential([
+        Conv2D(16, (3, 3), activation='relu', input_shape=(256, 256, 3)),
+        MaxPooling2D(2, 2),
+        Conv2D(32, (3, 3), activation='relu'),
+        MaxPooling2D(2, 2),
+        Flatten(),
+        Dense(64, activation='relu'),
+        Dense(1, activation='sigmoid')
+    ])
     
-    st.markdown("""
-    ### Carga manual del modelo
+    # Compilar el modelo
+    modelo.compile(optimizer='adam',
+                  loss='binary_crossentropy',
+                  metrics=['accuracy'])
     
-    Por favor, descargue manualmente el modelo desde Google Drive y súbalo aquí:
-    """)
+    st.warning("⚠️ USANDO MODELO DE PRUEBA - NO PARA USO REAL")
+    st.info("Este es un modelo de demostración simple sin entrenamiento real")
     
-    uploaded_model = st.file_uploader("Subir archivo best_model.keras", type=["keras", "h5"])
-    
-    if uploaded_model is not None:
-        # Guardar el archivo subido
-        with open(modelo_path, "wb") as f:
-            f.write(uploaded_model.getbuffer())
-        
-        try:
-            modelo = tf.keras.models.load_model(modelo_path)
-            st.success("✅ Modelo cargado exitosamente desde archivo subido")
-            return modelo
-        except Exception as e:
-            st.error(f"El archivo subido no es un modelo válido: {str(e)}")
-            return None
-    
-    return None  # Falló todo
+    return modelo
+
+# ==========================================
+# FUNCIONES DE DIAGNÓSTICO Y ANÁLISIS
+# ==========================================
 
 def preprocesar_imagen(imagen, tamano_objetivo=(256, 256)):
     """Preprocesar la imagen para la predicción del modelo"""
@@ -191,7 +159,10 @@ def crear_visualizacion_resultado(resultado, imagen, nombres_clases):
     plt.tight_layout()
     return fig
 
-# Interfaz principal de la aplicación
+# ==========================================
+# INTERFAZ PRINCIPAL DE LA APLICACIÓN
+# ==========================================
+
 st.title("🩺 Herramienta Diagnóstica de Imágenes Médicas")
 st.write("Suba una imagen médica para recibir un diagnóstico automatizado usando nuestro modelo de IA")
 
@@ -204,6 +175,19 @@ with st.sidebar:
     clase_0 = st.text_input("Nombre de clase negativa", "Normal")
     clase_1 = st.text_input("Nombre de clase positiva", "Anormal")
     nombres_clases = [clase_0, clase_1]
+    
+    # Opciones avanzadas
+    st.subheader("Opciones avanzadas")
+    usar_modelo_dummy = st.checkbox("Usar modelo de prueba", value=False, 
+                               help="Activa esta opción si tienes problemas para cargar el modelo real")
+    
+    # URL del modelo (configurable)
+    model_url = st.text_input(
+        "URL del modelo", 
+        # REEMPLAZA ESTA URL CON LA DE TU MODELO EN GITHUB RELEASES
+        "https://github.com/ViannyCruz/SD-AI/releases/download/tag01/best_model.keras",
+        help="URL directa para descargar el modelo"
+    )
     
     # Caja de información
     st.info("""
@@ -232,28 +216,79 @@ with st.sidebar:
         no debe reemplazar el consejo médico profesional.
         """)
 
-# Área de contenido principal
+# ==========================================
+# GESTIÓN DEL MODELO
+# ==========================================
+
+# Ruta al modelo
+modelo_path = 'best_model.h5'
+
+# Determinar si se debe usar el modelo dummy
+if usar_modelo_dummy:
+    modelo = crear_modelo_dummy()
+    modelo_cargado = True
+else:
+    modelo_cargado = False
+    
+    # Verificar si ya existe un modelo local
+    if os.path.exists(modelo_path):
+        st.info(f"Usando modelo existente: {modelo_path}")
+        modelo = cargar_modelo_tensorflow(modelo_path)
+        if modelo is not None:
+            modelo_cargado = True
+            st.success("✅ Modelo cargado exitosamente")
+        else:
+            st.warning("⚠️ Modelo existente no válido, se eliminará")
+            os.remove(modelo_path)
+    
+    # Si no hay modelo válido, intentar descargar
+    if not modelo_cargado:
+        if st.button("Descargar modelo", type="primary"):
+            descarga_ok = descargar_modelo_desde_url(model_url, modelo_path)
+            if descarga_ok:
+                modelo = cargar_modelo_tensorflow(modelo_path)
+                if modelo is not None:
+                    modelo_cargado = True
+                    st.success("✅ Modelo cargado exitosamente")
+                else:
+                    st.error("❌ No se pudo cargar el modelo descargado")
+        
+        # Opción para subir manualmente
+        st.markdown("### O suba el modelo manualmente:")
+        uploaded_model = st.file_uploader("Subir archivo del modelo", type=["h5", "keras"])
+        
+        if uploaded_model is not None:
+            # Guardar el archivo subido
+            with open(modelo_path, "wb") as f:
+                f.write(uploaded_model.getbuffer())
+            
+            # Intentar cargar el modelo subido
+            modelo = cargar_modelo_tensorflow(modelo_path)
+            if modelo is not None:
+                modelo_cargado = True
+                st.success("✅ Modelo cargado exitosamente desde archivo subido")
+            else:
+                st.error("❌ El archivo subido no es un modelo válido")
+
+# ==========================================
+# AREA PRINCIPAL DE ANÁLISIS DE IMÁGENES
+# ==========================================
+
 # Crear un widget para subir archivos
 archivo_subido = st.file_uploader("Subir una imagen médica", type=["jpg", "jpeg", "png", "tif", "tiff"])
-
-# Crear dos columnas para el diseño
-col1, col2 = st.columns([1, 1])
 
 # Si se sube un archivo
 if archivo_subido is not None:
     # Cargar y mostrar la imagen
-    with col1:
-        imagen = Image.open(archivo_subido)
-        st.image(imagen, caption="Imagen Subida", use_column_width=True)
+    imagen = Image.open(archivo_subido)
+    st.image(imagen, caption="Imagen Subida", use_column_width=True)
     
-    # Añadir un botón para ejecutar el diagnóstico
-    boton_diagnostico = st.button("Ejecutar Diagnóstico", type="primary")
-    
-    if boton_diagnostico:
-        # Cargar el modelo
-        modelo = cargar_modelo()
+    # Solo permitir diagnóstico si hay un modelo cargado
+    if modelo_cargado:
+        # Añadir un botón para ejecutar el diagnóstico
+        boton_diagnostico = st.button("Ejecutar Diagnóstico", type="primary")
         
-        if modelo:
+        if boton_diagnostico:
             with st.spinner("Analizando imagen..."):
                 # Preprocesar la imagen
                 array_img = preprocesar_imagen(imagen)
@@ -289,12 +324,8 @@ if archivo_subido is not None:
                         "Confianza": f"{resultado['probabilidad']:.4f}",
                         "Salida Bruta del Modelo": resultado['prediccion_bruta']
                     })
-                
-                # Añadir descargo de responsabilidad
-                st.caption("""
-                AVISO LEGAL: Esta herramienta es solo para fines educativos y no está destinada para uso clínico. 
-                Siempre consulte con profesionales de la salud para diagnósticos médicos.
-                """)
+    else:
+        st.warning("⚠️ Primero debe cargar un modelo para realizar diagnósticos")
 
 else:
     # Mostrar mensaje de instrucción cuando no se sube ningún archivo
