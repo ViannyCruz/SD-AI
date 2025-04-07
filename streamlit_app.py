@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import os
 import requests
 from io import BytesIO
+import traceback
 
 # Configuración de la página
 st.set_page_config(
@@ -16,10 +17,100 @@ st.set_page_config(
 )
 
 # ==========================================
-# FUNCIONES DE CARGA DE MODELO MEJORADAS
+# FUNCIONES DE DIAGNÓSTICO DE MODELO
 # ==========================================
 
-def descargar_modelo_desde_url(url, destino='best_model.h5'):
+def verificar_modelo(ruta_modelo, mostrar_info=True):
+    """Verificar si un modelo puede cargarse correctamente y mostrar diagnóstico"""
+    resultados = {
+        "exito": False,
+        "error": None,
+        "tipo": None,
+        "num_capas": None,
+        "resumen": None,
+        "tamano_archivo": None,
+        "mensaje": ""
+    }
+    
+    # Verificar si el archivo existe
+    if not os.path.exists(ruta_modelo):
+        resultados["error"] = f"El archivo {ruta_modelo} no existe"
+        resultados["mensaje"] = f"❌ Error: El archivo {ruta_modelo} no existe"
+        return resultados
+    
+    # Verificar tamaño
+    tamano = os.path.getsize(ruta_modelo) / (1024*1024)  # En MB
+    resultados["tamano_archivo"] = tamano
+    
+    if tamano < 1:
+        resultados["error"] = f"El archivo es muy pequeño ({tamano:.2f} MB)"
+        resultados["mensaje"] = f"❌ Error: El archivo es demasiado pequeño ({tamano:.2f} MB)"
+        return resultados
+    
+    # Intentar cargar el modelo
+    try:
+        # Método 1: Carga estándar
+        modelo = tf.keras.models.load_model(ruta_modelo)
+        
+        # Si llegamos aquí, la carga fue exitosa
+        resultados["exito"] = True
+        resultados["tipo"] = str(type(modelo))
+        resultados["num_capas"] = len(modelo.layers) if hasattr(modelo, 'layers') else "N/A"
+        
+        # Capturar el resumen del modelo como string
+        import io
+        resumen_buffer = io.StringIO()
+        modelo.summary(print_fn=lambda x: resumen_buffer.write(x + '\n'))
+        resultados["resumen"] = resumen_buffer.getvalue()
+        
+        resultados["mensaje"] = f"✅ Modelo cargado correctamente: {tamano:.2f} MB, {resultados['num_capas']} capas"
+        
+    except Exception as e:
+        # Capturar el error detallado
+        resultados["error"] = str(e)
+        resultados["mensaje"] = f"❌ Error al cargar: {str(e)}"
+        
+        # Intentar con opciones alternativas
+        try:
+            # Método 2: Deshabilitar compilación
+            modelo = tf.keras.models.load_model(ruta_modelo, compile=False)
+            resultados["exito"] = True
+            resultados["tipo"] = str(type(modelo))
+            resultados["num_capas"] = len(modelo.layers) if hasattr(modelo, 'layers') else "N/A"
+            resultados["mensaje"] = f"✅ Modelo cargado sin compilación: {tamano:.2f} MB, {resultados['num_capas']} capas"
+        except Exception as e2:
+            # Agregar error del segundo intento
+            resultados["error"] += f"\n\nSegundo intento (sin compilación): {str(e2)}"
+            
+            # Verificar si es un SavedModel directory
+            if os.path.isdir(ruta_modelo):
+                try:
+                    # Método 3: Cargar como SavedModel
+                    modelo = tf.saved_model.load(ruta_modelo)
+                    resultados["exito"] = True
+                    resultados["tipo"] = str(type(modelo))
+                    resultados["mensaje"] = f"✅ Cargado como SavedModel: {tamano:.2f} MB"
+                except Exception as e3:
+                    resultados["error"] += f"\n\nTercer intento (SavedModel): {str(e3)}"
+    
+    # Mostrar los resultados en la interfaz si se solicita
+    if mostrar_info:
+        if resultados["exito"]:
+            st.success(resultados["mensaje"])
+            with st.expander("Ver detalles del modelo"):
+                st.write(f"**Tipo:** {resultados['tipo']}")
+                st.write(f"**Tamaño:** {tamano:.2f} MB")
+                st.write(f"**Número de capas:** {resultados['num_capas']}")
+                if resultados["resumen"]:
+                    st.text(resultados["resumen"])
+        else:
+            st.error(resultados["mensaje"])
+            with st.expander("Ver detalles del error"):
+                st.code(resultados["error"])
+    
+    return resultados
+
+def descargar_modelo_desde_url(url, destino='best_model.keras'):
     """Descargar el modelo desde una URL directa"""
     try:
         st.info(f"Descargando modelo desde: {url}")
@@ -53,6 +144,11 @@ def descargar_modelo_desde_url(url, destino='best_model.h5'):
         # Verificar que se haya guardado correctamente
         if os.path.exists(destino) and os.path.getsize(destino) > 1000:  # Al menos 1KB
             st.success(f"✅ Modelo descargado correctamente: {os.path.getsize(destino)/1024/1024:.2f} MB")
+            
+            # Verificar el modelo descargado
+            st.write("Verificando el modelo descargado...")
+            verificar_modelo(destino)
+            
             return True
         else:
             st.error("❌ Error: el archivo descargado parece estar incompleto o corrupto")
@@ -189,6 +285,11 @@ with st.sidebar:
         help="URL directa para descargar el modelo"
     )
     
+    # Modo diagnóstico
+    st.subheader("Diagnóstico")
+    modo_diagnostico = st.checkbox("Activar modo diagnóstico", value=True, 
+                                  help="Muestra información detallada sobre el estado del modelo")
+    
     # Caja de información
     st.info("""
     Esta aplicación utiliza un modelo de aprendizaje profundo para analizar imágenes médicas.
@@ -217,11 +318,71 @@ with st.sidebar:
         """)
 
 # ==========================================
+# SECCIÓN DE DIAGNÓSTICO DE MODELO
+# ==========================================
+
+if modo_diagnostico:
+    st.header("🔍 Diagnóstico del Modelo")
+    
+    # Ruta al modelo
+    modelo_path = 'best_model.keras'
+    
+    # Crear pestañas para organizar las opciones de diagnóstico
+    tab1, tab2, tab3 = st.tabs(["Verificación de modelo", "Descarga manual", "Modelo de prueba"])
+    
+    with tab1:
+        st.subheader("Verificar modelo existente")
+        
+        # Verificar si el modelo ya existe
+        if os.path.exists(modelo_path):
+            st.info(f"Modelo encontrado: {modelo_path}")
+            if st.button("Verificar modelo existente"):
+                verificar_modelo(modelo_path)
+        else:
+            st.warning(f"No se encontró el archivo {modelo_path} en el directorio")
+        
+        # Verificar URL del modelo
+        st.subheader("Descargar y verificar modelo")
+        if st.button("Descargar y verificar modelo"):
+            descarga_ok = descargar_modelo_desde_url(model_url, modelo_path)
+            
+    with tab2:
+        st.subheader("Subida manual del modelo")
+        st.write("Si tienes problemas con la descarga automática, puedes subir el modelo manualmente:")
+        
+        uploaded_model = st.file_uploader("Subir archivo del modelo", type=["h5", "keras"])
+        
+        if uploaded_model is not None:
+            # Guardar el archivo subido
+            with open(modelo_path, "wb") as f:
+                f.write(uploaded_model.getbuffer())
+            
+            # Verificar el modelo subido
+            st.write("Verificando el modelo subido...")
+            resultado_verificacion = verificar_modelo(modelo_path)
+    
+    with tab3:
+        st.subheader("Modelo de prueba")
+        st.write("Puedes usar un modelo de prueba para verificar la funcionalidad de la aplicación:")
+        
+        if st.button("Crear y verificar modelo de prueba"):
+            # Crear modelo dummy
+            dummy_model = crear_modelo_dummy()
+            
+            # Guardar modelo dummy para verificación
+            dummy_path = "modelo_prueba.h5"
+            dummy_model.save(dummy_path)
+            
+            # Verificar
+            st.write("Verificando modelo de prueba:")
+            verificar_modelo(dummy_path)
+
+# ==========================================
 # GESTIÓN DEL MODELO
 # ==========================================
 
 # Ruta al modelo
-modelo_path = 'best_model.h5'
+modelo_path = 'best_model.keras'
 
 # Determinar si se debe usar el modelo dummy
 if usar_modelo_dummy:
@@ -238,41 +399,51 @@ else:
             modelo_cargado = True
             st.success("✅ Modelo cargado exitosamente")
         else:
-            st.warning("⚠️ Modelo existente no válido, se eliminará")
-            os.remove(modelo_path)
+            st.warning("⚠️ Modelo existente no válido")
+            if modo_diagnostico:
+                st.write("Ejecutando diagnóstico del modelo...")
+                verificar_modelo(modelo_path)
     
-    # Si no hay modelo válido, intentar descargar
-    if not modelo_cargado:
-        if st.button("Descargar modelo", type="primary"):
-            descarga_ok = descargar_modelo_desde_url(model_url, modelo_path)
-            if descarga_ok:
+    # Si no hay modelo válido, mostrar opciones
+    if not modelo_cargado and not modo_diagnostico:
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("Descargar modelo", type="primary"):
+                descarga_ok = descargar_modelo_desde_url(model_url, modelo_path)
+                if descarga_ok:
+                    modelo = cargar_modelo_tensorflow(modelo_path)
+                    if modelo is not None:
+                        modelo_cargado = True
+                        st.success("✅ Modelo cargado exitosamente")
+                    else:
+                        st.error("❌ No se pudo cargar el modelo descargado")
+                        verificar_modelo(modelo_path)
+        
+        with col2:
+            st.write("O suba el modelo manualmente:")
+            uploaded_model = st.file_uploader("Subir archivo del modelo", type=["h5", "keras"], key="uploader_main")
+            
+            if uploaded_model is not None:
+                # Guardar el archivo subido
+                with open(modelo_path, "wb") as f:
+                    f.write(uploaded_model.getbuffer())
+                
+                # Intentar cargar el modelo subido
                 modelo = cargar_modelo_tensorflow(modelo_path)
                 if modelo is not None:
                     modelo_cargado = True
-                    st.success("✅ Modelo cargado exitosamente")
+                    st.success("✅ Modelo cargado exitosamente desde archivo subido")
                 else:
-                    st.error("❌ No se pudo cargar el modelo descargado")
-        
-        # Opción para subir manualmente
-        st.markdown("### O suba el modelo manualmente:")
-        uploaded_model = st.file_uploader("Subir archivo del modelo", type=["h5", "keras"])
-        
-        if uploaded_model is not None:
-            # Guardar el archivo subido
-            with open(modelo_path, "wb") as f:
-                f.write(uploaded_model.getbuffer())
-            
-            # Intentar cargar el modelo subido
-            modelo = cargar_modelo_tensorflow(modelo_path)
-            if modelo is not None:
-                modelo_cargado = True
-                st.success("✅ Modelo cargado exitosamente desde archivo subido")
-            else:
-                st.error("❌ El archivo subido no es un modelo válido")
+                    st.error("❌ El archivo subido no es un modelo válido")
+                    verificar_modelo(modelo_path)
 
 # ==========================================
 # AREA PRINCIPAL DE ANÁLISIS DE IMÁGENES
 # ==========================================
+
+if not modo_diagnostico:
+    st.header("📊 Análisis de Imágenes")
 
 # Crear un widget para subir archivos
 archivo_subido = st.file_uploader("Subir una imagen médica", type=["jpg", "jpeg", "png", "tif", "tiff"])
@@ -289,41 +460,45 @@ if archivo_subido is not None:
         boton_diagnostico = st.button("Ejecutar Diagnóstico", type="primary")
         
         if boton_diagnostico:
-            with st.spinner("Analizando imagen..."):
-                # Preprocesar la imagen
-                array_img = preprocesar_imagen(imagen)
-                
-                # Hacer predicción
-                resultado = predecir_imagen(modelo, array_img, nombres_clases)
-                
-                # Mostrar resultado diagnóstico
-                st.subheader("Resultado Diagnóstico")
-                
-                # Crear un cuadro coloreado para el resultado con CSS personalizado
-                color_resultado = "green" if resultado['clase'] == nombres_clases[0] else "red"
-                confianza = resultado['probabilidad'] * 100
-                
-                st.markdown(f"""
-                <div style="padding: 20px; 
-                            border-radius: 10px; 
-                            background-color: {color_resultado}15; 
-                            border: 2px solid {color_resultado};">
-                    <h2 style="text-align: center; color: {color_resultado};">{resultado['clase']}</h2>
-                    <p style="text-align: center; font-size: 18px;">Confianza: {confianza:.1f}%</p>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                # Crear visualización
-                fig = crear_visualizacion_resultado(resultado, imagen, nombres_clases)
-                st.pyplot(fig)
-                
-                # Mostrar detalles técnicos adicionales en un expansor
-                with st.expander("Detalles Técnicos"):
-                    st.json({
-                        "Clase Predicha": resultado['clase'],
-                        "Confianza": f"{resultado['probabilidad']:.4f}",
-                        "Salida Bruta del Modelo": resultado['prediccion_bruta']
-                    })
+            try:
+                with st.spinner("Analizando imagen..."):
+                    # Preprocesar la imagen
+                    array_img = preprocesar_imagen(imagen)
+                    
+                    # Hacer predicción
+                    resultado = predecir_imagen(modelo, array_img, nombres_clases)
+                    
+                    # Mostrar resultado diagnóstico
+                    st.subheader("Resultado Diagnóstico")
+                    
+                    # Crear un cuadro coloreado para el resultado con CSS personalizado
+                    color_resultado = "green" if resultado['clase'] == nombres_clases[0] else "red"
+                    confianza = resultado['probabilidad'] * 100
+                    
+                    st.markdown(f"""
+                    <div style="padding: 20px; 
+                                border-radius: 10px; 
+                                background-color: {color_resultado}15; 
+                                border: 2px solid {color_resultado};">
+                        <h2 style="text-align: center; color: {color_resultado};">{resultado['clase']}</h2>
+                        <p style="text-align: center; font-size: 18px;">Confianza: {confianza:.1f}%</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    # Crear visualización
+                    fig = crear_visualizacion_resultado(resultado, imagen, nombres_clases)
+                    st.pyplot(fig)
+                    
+                    # Mostrar detalles técnicos adicionales en un expansor
+                    with st.expander("Detalles Técnicos"):
+                        st.json({
+                            "Clase Predicha": resultado['clase'],
+                            "Confianza": f"{resultado['probabilidad']:.4f}",
+                            "Salida Bruta del Modelo": resultado['prediccion_bruta']
+                        })
+            except Exception as e:
+                st.error(f"Error durante la predicción: {str(e)}")
+                st.code(traceback.format_exc())
     else:
         st.warning("⚠️ Primero debe cargar un modelo para realizar diagnósticos")
 
@@ -332,9 +507,10 @@ else:
     st.info("Por favor, suba una imagen para comenzar.")
     
     # Añadir una imagen de demostración (opcional)
-    st.markdown("### Vista Previa de Resultado de Muestra")
-    st.image("https://via.placeholder.com/800x400.png?text=Ejemplo+de+Resultado+Diagnóstico", 
-             caption="Ejemplo de visualización de diagnóstico (suba una imagen para ver sus resultados)")
+    if not modo_diagnostico:
+        st.markdown("### Vista Previa de Resultado de Muestra")
+        st.image("https://via.placeholder.com/800x400.png?text=Ejemplo+de+Resultado+Diagnóstico", 
+                caption="Ejemplo de visualización de diagnóstico (suba una imagen para ver sus resultados)")
 
 # Pie de página
 st.markdown("---")
