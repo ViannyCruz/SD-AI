@@ -31,7 +31,7 @@ def cargar_modelo():
             # Extraer el ID del archivo del enlace de Google Drive
             # Ejemplo: Si tu enlace es https://drive.google.com/file/d/1234567890abcdef/view
             # El ID sería: 1234567890abcdef
-            drive_id = st.secrets.get("DRIVE_MODEL_ID", "TU_ID_DEL_ARCHIVO_AQUI")
+            drive_id = st.secrets.get("DRIVE_MODEL_ID", "13S8aXIDQpixM5Siy-0tWHSm2MEHw1Ksh")
             drive_url = f"https://drive.google.com/uc?id={drive_id}"
             
             # Mostrar mensaje de descarga
