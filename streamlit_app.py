@@ -4,7 +4,6 @@ from tensorflow.keras.models import load_model
 import numpy as np
 import os
 import time
-from humanize import naturalsize
 
 # App configuration
 st.set_page_config(page_title="CNN Model Loader Test", layout="wide")
@@ -17,11 +16,18 @@ MODEL_URL = f"https://drive.google.com/uc?id={FILE_ID}"
 MODEL_PATH = "loaded_model.keras"
 CHUNK_SIZE = 32768  # For download progress tracking
 
+def format_size(size_bytes):
+    """Convert file size to human-readable format"""
+    for unit in ['B', 'KB', 'MB', 'GB']:
+        if size_bytes < 1024:
+            return f"{size_bytes:.1f} {unit}"
+        size_bytes /= 1024
+    return f"{size_bytes:.1f} TB"
+
 def download_with_progress(url, output):
     """Enhanced download function with better progress tracking"""
     try:
         import requests
-        from tqdm import tqdm
         
         st.info(f"Starting download from:\n{url}")
         
@@ -36,7 +42,7 @@ def download_with_progress(url, output):
         
         with open(output, 'wb') as f:
             downloaded = 0
-            for chunk in tqdm(response.iter_content(chunk_size=CHUNK_SIZE)):
+            for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
                 if chunk:
                     f.write(chunk)
                     downloaded += len(chunk)
@@ -47,7 +53,7 @@ def download_with_progress(url, output):
                     speed = downloaded / (1024 * 1024 * elapsed) if elapsed > 0 else 0
                     
                     progress_bar.progress(progress)
-                    status_text.text(f"Downloaded: {naturalsize(downloaded)} / {naturalsize(total_size)}")
+                    status_text.text(f"Downloaded: {format_size(downloaded)} / {format_size(total_size)}")
                     download_speed.text(f"Speed: {speed:.2f} MB/s")
         
         progress_bar.empty()
@@ -60,7 +66,7 @@ def download_with_progress(url, output):
                 st.success(f"Download complete! File saved as: {output}")
                 return True
             else:
-                st.error(f"Download incomplete! Expected {total_size} bytes, got {actual_size}")
+                st.error(f"Download incomplete! Expected {format_size(total_size)}, got {format_size(actual_size)}")
                 os.remove(output)
                 return False
         else:
@@ -76,16 +82,14 @@ def download_with_progress(url, output):
 def verify_model_integrity(filepath):
     """Check if the file appears to be a valid Keras model"""
     try:
-        # Basic checks before attempting to load
         if not os.path.exists(filepath):
             return False, "File does not exist"
             
         min_keras_size = 1024  # Keras models are typically >1KB
         file_size = os.path.getsize(filepath)
         if file_size < min_keras_size:
-            return False, f"File too small ({file_size} bytes) to be a valid Keras model"
+            return False, f"File too small ({format_size(file_size)}) to be a valid Keras model"
             
-        # Check for Keras file signature (not perfect but helpful)
         with open(filepath, 'rb') as f:
             header = f.read(4)
             if header == b'PK\x03\x04':  # ZIP signature (for .keras format)
@@ -100,21 +104,18 @@ def verify_model_integrity(filepath):
 def load_model_safely(filepath):
     """Attempt to load model with multiple fallbacks"""
     try:
-        # Try standard load first
         model = load_model(filepath)
         return model, "Standard load successful"
     except Exception as e:
         st.warning(f"Standard load failed: {str(e)}")
         
         try:
-            # Try loading without compilation
             model = load_model(filepath, compile=False)
             return model, "Load successful (compile=False)"
         except Exception as e:
             st.warning(f"Load with compile=False failed: {str(e)}")
             
             try:
-                # Try custom objects workaround
                 from tensorflow.keras.layers import InputLayer
                 custom_objects = {'InputLayer': InputLayer}
                 model = load_model(filepath, custom_objects=custom_objects)
@@ -138,7 +139,6 @@ st.header("1️⃣ Model Download")
 if not os.path.exists(MODEL_PATH):
     if st.button("⬇️ Download Model"):
         if download_with_progress(MODEL_URL, MODEL_PATH):
-            # Verify download integrity
             is_valid, message = verify_model_integrity(MODEL_PATH)
             if is_valid:
                 st.success(f"✅ Model verification passed: {message}")
@@ -147,7 +147,7 @@ if not os.path.exists(MODEL_PATH):
 else:
     st.success("Model already downloaded")
     file_size = os.path.getsize(MODEL_PATH)
-    st.write(f"**File size:** {naturalsize(file_size)}")
+    st.write(f"**File size:** {format_size(file_size)}")
     is_valid, message = verify_model_integrity(MODEL_PATH)
     if is_valid:
         st.success(f"✅ {message}")
@@ -161,7 +161,6 @@ if os.path.exists(MODEL_PATH):
         if model is not None:
             st.success(message)
             
-            # Display model info
             st.subheader("Model Information")
             cols = st.columns(2)
             with cols[0]:
@@ -182,7 +181,6 @@ if os.path.exists(MODEL_PATH):
                 except Exception as e:
                     st.warning(f"Couldn't show summary: {str(e)}")
             
-            # Prediction test
             st.header("3️⃣ Prediction Test")
             input_shape = model.input_shape[1:]  # Get input shape (excluding batch)
             dummy_input = np.random.rand(1, *input_shape).astype(np.float32)
