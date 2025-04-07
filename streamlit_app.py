@@ -1,126 +1,128 @@
 import streamlit as st
-import requests
 import os
-import time
+import requests
+import shutil
 from tensorflow.keras.models import load_model
 import numpy as np
-import shutil
+import gdown
 
-# Configuration - ADJUST THESE FOR YOUR MODEL
-MODEL_URL = "https://drive.google.com/uc?id=13S8aXIDQpixM5Siy-0tWHSm2MEHw1Ksh"  # Your Google Drive link
-MODEL_FILENAME = "my_model.keras"  # Expected filename
-MODEL_PATH = os.path.abspath(MODEL_FILENAME)
-TEMP_PATH = os.path.abspath("temp_download.keras")
-EXPECTED_SIZE = 310 * 1024 * 1024  # 310MB (adjust to your exact size)
-MIN_ACCEPTABLE_SIZE = 300 * 1024 * 1024  # 300MB minimum
+# Configuration
+MODEL_URL = "https://drive.google.com/uc?id=13S8aXIDQpixM5Siy-0tWHSm2MEHw1Ksh"
+MODEL_PATH = os.path.abspath("my_model.keras")
+EXPECTED_SIZE = 310 * 1024 * 1024  # 310MB
+MAX_RETRIES = 3
 
-def clean_up():
-    """Remove temporary files"""
-    for path in [MODEL_PATH, TEMP_PATH]:
-        if os.path.exists(path):
-            os.remove(path)
+def reset_environment():
+    """Clear any existing files"""
+    if os.path.exists(MODEL_PATH):
+        os.remove(MODEL_PATH)
 
-def download_with_retry():
-    """Robust download with size verification"""
-    clean_up()
-    
+def download_with_gdown():
+    """Alternative download using gdown"""
     try:
-        with st.spinner(f"🚀 Downloading {MODEL_FILENAME} (310MB)..."):
-            # Create session for better performance
-            session = requests.Session()
+        reset_environment()
+        with st.spinner(f"⬇️ Downloading model (310MB) using gdown..."):
+            gdown.download(MODEL_URL, MODEL_PATH, quiet=False)
+        
+        if os.path.exists(MODEL_PATH):
+            actual_size = os.path.getsize(MODEL_PATH)
+            if actual_size >= EXPECTED_SIZE * 0.95:  # Allow 5% variance
+                st.success(f"✅ Download complete! Size: {actual_size/1024/1024:.1f}MB")
+                return True
+        st.error("❌ Download incomplete")
+        return False
+    except Exception as e:
+        st.error(f"❌ gdown failed: {str(e)}")
+        return False
+
+def download_with_requests():
+    """Direct download with requests"""
+    reset_environment()
+    try:
+        with st.spinner(f"⬇️ Downloading model (310MB) using requests..."):
             headers = {
                 "User-Agent": "Mozilla/5.0",
-                "Range": "bytes=0-"
+                "Accept-Encoding": "identity"
             }
-            
-            # Initial request to check size
-            response = session.head(MODEL_URL, headers=headers)
-            remote_size = int(response.headers.get('content-length', 0))
-            
-            if remote_size < MIN_ACCEPTABLE_SIZE:
-                st.error(f"❌ Remote file too small ({remote_size/1024/1024:.1f}MB)")
-                return False
-            
-            # Download with progress
-            response = session.get(MODEL_URL, stream=True)
+            response = requests.get(MODEL_URL, headers=headers, stream=True)
             response.raise_for_status()
+            
+            total_size = int(response.headers.get('content-length', EXPECTED_SIZE))
+            if total_size < EXPECTED_SIZE * 0.5:
+                st.error(f"❌ Reported size too small: {total_size/1024/1024:.1f}MB")
+                return False
             
             progress_bar = st.progress(0)
             status_text = st.empty()
-            speed_text = st.empty()
-            start_time = time.time()
             
             downloaded = 0
-            with open(TEMP_PATH, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=32768):  # 32KB chunks
+            with open(MODEL_PATH, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=32768):
                     if chunk:
                         f.write(chunk)
                         downloaded += len(chunk)
-                        elapsed = time.time() - start_time
-                        
-                        # Update UI every 100MB or 2 seconds
-                        if downloaded % (100 * 1024 * 1024) == 0 or elapsed > 2:
-                            progress = min(100, downloaded / EXPECTED_SIZE * 100)
-                            speed = downloaded / (1024 * 1024 * elapsed) if elapsed > 0 else 0
-                            remaining = (EXPECTED_SIZE - downloaded) / (1024 * 1024 * speed) if speed > 0 else 0
-                            
-                            progress_bar.progress(int(progress))
-                            status_text.text(
-                                f"📥 Downloaded: {downloaded/1024/1024:.1f}MB/{EXPECTED_SIZE/1024/1024:.1f}MB\n"
-                                f"⏱️ Elapsed: {elapsed:.1f}s"
-                            )
-                            speed_text.text(
-                                f"🚀 Speed: {speed:.2f} MB/s\n"
-                                f"⏳ Remaining: {remaining:.1f}s" if remaining > 0 else ""
-                            )
+                        progress = min(100, downloaded / total_size * 100)
+                        progress_bar.progress(int(progress))
+                        status_text.text(
+                            f"Downloaded: {downloaded/1024/1024:.1f}MB/"
+                            f"{total_size/1024/1024:.1f}MB"
+                        )
             
-            # Final verification
-            actual_size = os.path.getsize(TEMP_PATH)
-            if abs(actual_size - EXPECTED_SIZE) > 5 * 1024 * 1024:  # Allow 5MB variance
-                st.error(f"Size mismatch! Expected ~{EXPECTED_SIZE/1024/1024:.1f}MB, got {actual_size/1024/1024:.1f}MB")
+            actual_size = os.path.getsize(MODEL_PATH)
+            if actual_size >= EXPECTED_SIZE * 0.95:
+                st.success(f"✅ Download complete! Size: {actual_size/1024/1024:.1f}MB")
+                return True
+            else:
+                st.error(f"❌ Incomplete download ({actual_size/1024/1024:.1f}MB)")
                 return False
-                
-            # Move to final location
-            shutil.move(TEMP_PATH, MODEL_PATH)
-            st.success(f"✅ Download complete! Size: {actual_size/1024/1024:.1f}MB")
-            return True
-            
     except Exception as e:
         st.error(f"❌ Download failed: {str(e)}")
-        clean_up()
         return False
 
 def verify_model():
-    """Thorough model verification"""
+    """Verify the downloaded model"""
     if not os.path.exists(MODEL_PATH):
         return False, "File not found"
     
     file_size = os.path.getsize(MODEL_PATH)
-    if file_size < MIN_ACCEPTABLE_SIZE:
+    if file_size < EXPECTED_SIZE * 0.95:
         return False, f"File too small ({file_size/1024/1024:.1f}MB)"
     
-    # Quick check for Keras format
     try:
+        # Quick check for Keras format
         with open(MODEL_PATH, 'rb') as f:
             header = f.read(4)
             if header != b'PK\x03\x04':  # ZIP signature
-                return False, "Not a valid .keras ZIP file"
-    except:
-        return False, "File read error"
-    
-    return True, f"✅ Valid .keras file ({file_size/1024/1024:.1f}MB)"
+                return False, "Not a valid .keras file"
+        return True, f"✅ Valid model ({file_size/1024/1024:.1f}MB)"
+    except Exception as e:
+        return False, f"Verification failed: {str(e)}"
 
 # Streamlit UI
 st.set_page_config(layout="wide")
-st.title(f"🧠 {MODEL_FILENAME} Loader (310MB)")
+st.title("🧠 Large Model Loader (310MB)")
 
-# Download section
-st.header("1. Download Model")
-if st.button("🔄 Download Model (310MB)"):
-    if download_with_retry():
-        st.balloons()
+# Download Section
+st.header("1. Download Options")
 
-# Verification section
+col1, col2 = st.columns(2)
+with col1:
+    if st.button("Method 1: Download with gdown"):
+        for attempt in range(MAX_RETRIES):
+            if download_with_gdown():
+                break
+            if attempt < MAX_RETRIES - 1:
+                st.warning(f"Retrying... ({attempt + 1}/{MAX_RETRIES})")
+
+with col2:
+    if st.button("Method 2: Download with requests"):
+        for attempt in range(MAX_RETRIES):
+            if download_with_requests():
+                break
+            if attempt < MAX_RETRIES - 1:
+                st.warning(f"Retrying... ({attempt + 1}/{MAX_RETRIES})")
+
+# Verification Section
 st.header("2. Verify Model")
 if os.path.exists(MODEL_PATH):
     file_size = os.path.getsize(MODEL_PATH)
@@ -138,7 +140,7 @@ if os.path.exists(MODEL_PATH):
                     model = load_model(MODEL_PATH)
                     st.success("✅ Model loaded successfully!")
                     
-                    # Show model info
+                    # Model info
                     st.subheader("Model Information")
                     cols = st.columns(2)
                     with cols[0]:
@@ -146,7 +148,7 @@ if os.path.exists(MODEL_PATH):
                     with cols[1]:
                         st.write("**Output shape:**", model.output_shape)
                     
-                    # Test prediction
+                    # Prediction test
                     st.subheader("Prediction Test")
                     try:
                         dummy_input = np.random.rand(*model.input_shape[1:]).astype(np.float32)
@@ -162,11 +164,33 @@ if os.path.exists(MODEL_PATH):
 else:
     st.warning("No model file found - please download first")
 
-# Debug info
-st.header("🛠️ Debug Information")
-st.code(f"""
-Working directory: {os.getcwd()}
-Files present: {os.listdir()}
-Expected size: {EXPECTED_SIZE/1024/1024:.1f}MB
-Model path: {MODEL_PATH}
-""")
+# Debug Info
+st.header("🛠️ Troubleshooting")
+st.markdown("""
+### If downloads fail:
+1. **Check your Google Drive link**:
+   - Ensure the file is shared with "Anyone with the link"
+   - Try accessing it manually: [Download Link](https://drive.google.com/uc?id=13S8aXIDQpixM5Siy-0tWHSm2MEHw1Ksh)
+
+2. **Alternative solutions**:
+   - Upload your model to another service (Dropbox, S3, etc.)
+   - Split the model into smaller parts using:
+     ```python
+     split -b 100M my_model.keras my_model_part_
+     ```
+   - Convert to TensorFlow Lite for smaller size:
+     ```python
+     converter = tf.lite.TFLiteConverter.from_keras_model(model)
+     tflite_model = converter.convert()
+     ```
+
+### Current Environment:
+```python
+Working directory: {cwd}
+Files present: {files}
+Python version: {py_version}
+""".format(
+    cwd=os.getcwd(),
+    files=os.listdir(),
+    py_version=sys.version
+))
