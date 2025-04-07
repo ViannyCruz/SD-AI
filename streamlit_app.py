@@ -4,6 +4,10 @@ from tensorflow.keras.models import load_model
 import numpy as np
 import os
 import time
+import requests
+from io import StringIO
+import sys
+from tensorflow.keras.layers import InputLayer
 
 # App configuration
 st.set_page_config(page_title="CNN Model Loader Test", layout="wide")
@@ -13,8 +17,8 @@ st.markdown("Testing model loading from Google Drive")
 # Constants
 FILE_ID = "13S8aXIDQpixM5Siy-0tWHSm2MEHw1Ksh"
 MODEL_URL = f"https://drive.google.com/uc?id={FILE_ID}"
-MODEL_PATH = "loaded_model.keras"
-CHUNK_SIZE = 32768  # For download progress tracking
+MODEL_PATH = os.path.abspath("loaded_model.keras")  # Absolute path
+CHUNK_SIZE = 32768
 
 def format_size(size_bytes):
     """Convert file size to human-readable format"""
@@ -25,10 +29,9 @@ def format_size(size_bytes):
     return f"{size_bytes:.1f} TB"
 
 def download_with_progress(url, output):
-    """Enhanced download function with better progress tracking"""
+    """Enhanced download function with absolute paths"""
+    output_path = os.path.abspath(output)
     try:
-        import requests
-        
         st.info(f"Starting download from:\n{url}")
         
         response = requests.get(url, stream=True)
@@ -37,120 +40,118 @@ def download_with_progress(url, output):
         total_size = int(response.headers.get('content-length', 0))
         progress_bar = st.progress(0)
         status_text = st.empty()
-        download_speed = st.empty()
         start_time = time.time()
         
-        with open(output, 'wb') as f:
+        with open(output_path, 'wb') as f:
             downloaded = 0
             for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
                 if chunk:
                     f.write(chunk)
                     downloaded += len(chunk)
-                    
-                    # Update progress
-                    elapsed = time.time() - start_time
                     progress = int(downloaded / total_size * 100)
+                    elapsed = time.time() - start_time
                     speed = downloaded / (1024 * 1024 * elapsed) if elapsed > 0 else 0
                     
                     progress_bar.progress(progress)
-                    status_text.text(f"Downloaded: {format_size(downloaded)} / {format_size(total_size)}")
-                    download_speed.text(f"Speed: {speed:.2f} MB/s")
+                    status_text.text(
+                        f"Downloaded: {format_size(downloaded)} / {format_size(total_size)}\n"
+                        f"Speed: {speed:.2f} MB/s\n"
+                        f"Saving to: {output_path}"
+                    )
         
         progress_bar.empty()
         status_text.empty()
-        download_speed.empty()
         
-        if os.path.exists(output):
-            actual_size = os.path.getsize(output)
+        if os.path.exists(output_path):
+            actual_size = os.path.getsize(output_path)
             if actual_size == total_size:
-                st.success(f"Download complete! File saved as: {output}")
+                st.success(f"✅ Download complete! File saved to:\n{output_path}")
                 return True
             else:
-                st.error(f"Download incomplete! Expected {format_size(total_size)}, got {format_size(actual_size)}")
-                os.remove(output)
+                st.error(f"❌ Download incomplete! Expected {format_size(total_size)}, got {format_size(actual_size)}")
+                os.remove(output_path)
                 return False
-        else:
-            st.error("Download failed - no file was created")
-            return False
-            
     except Exception as e:
-        st.error(f"Download error: {str(e)}")
-        if os.path.exists(output):
-            os.remove(output)
+        st.error(f"❌ Download error: {str(e)}")
+        if os.path.exists(output_path):
+            os.remove(output_path)
         return False
 
 def verify_model_integrity(filepath):
-    """Enhanced verification with more thorough checks"""
+    """Enhanced verification with absolute paths"""
+    abs_path = os.path.abspath(filepath)
     try:
-        # Basic file existence check
-        if not os.path.exists(filepath):
-            return False, "File does not exist"
+        if not os.path.exists(abs_path):
+            return False, f"❌ File not found at: {abs_path}"
             
-        # Size validation (Keras models are typically >1KB)
-        file_size = os.path.getsize(filepath)
+        file_size = os.path.getsize(abs_path)
         if file_size < 1024:
-            return False, f"File too small ({format_size(file_size)}) to be a valid Keras model"
+            return False, f"❌ File too small ({format_size(file_size)})"
         
-        # First check: Attempt to load with Keras (most reliable)
+        # Try actual loading for best verification
         try:
-            test_model = load_model(filepath, compile=False)
-            return True, "✅ Valid Keras model (verified by loading)"
-        except:
-            pass  # Continue with other checks if loading fails
-        
-        # Second check: File signature validation
-        with open(filepath, 'rb') as f:
-            header = f.read(100)  # Read more bytes for better detection
-            
-            # Check for Keras .h5 format signature
-            if header.startswith(b'\x89HDF'):
-                return True, "⚠️ File appears to be HDF5 format (.h5)"
-                
-            # Check for .keras zip format
-            if header.startswith(b'PK\x03\x04'):
-                return True, "⚠️ File appears to be .keras zip format"
-                
-            # Check for SavedModel directory structure
-            if os.path.isdir(filepath) and 'saved_model.pb' in os.listdir(filepath):
-                return True, "⚠️ Appears to be SavedModel format"
-        
-        return True, "⚠️ File exists but format uncertain (could still be valid)"
-        
-    except Exception as e:
-        return False, f"❌ Verification error: {str(e)}"
-def load_model_safely(filepath):
-    """Attempt to load model with multiple fallbacks"""
-    try:
-        model = load_model(filepath)
-        return model, "Standard load successful"
-    except Exception as e:
-        st.warning(f"Standard load failed: {str(e)}")
-        
-        try:
-            model = load_model(filepath, compile=False)
-            return model, "Load successful (compile=False)"
+            test_model = load_model(abs_path, compile=False)
+            return True, f"✅ Valid Keras model at:\n{abs_path}"
         except Exception as e:
-            st.warning(f"Load with compile=False failed: {str(e)}")
-            
-            try:
-                from tensorflow.keras.layers import InputLayer
-                custom_objects = {'InputLayer': InputLayer}
-                model = load_model(filepath, custom_objects=custom_objects)
-                return model, "Load successful with custom objects"
-            except Exception as e:
-                return None, f"All load attempts failed: {str(e)}"
+            st.warning(f"Initial load test failed: {str(e)}")
+        
+        # Check file signatures
+        with open(abs_path, 'rb') as f:
+            header = f.read(100)
+            if header.startswith(b'\x89HDF'):
+                return True, f"⚠️ HDF5 (.h5) format detected at:\n{abs_path}"
+            if header.startswith(b'PK\x03\x04'):
+                return True, f"⚠️ .keras zip format detected at:\n{abs_path}"
+        
+        return True, f"⚠️ File exists but format uncertain at:\n{abs_path}"
+    except Exception as e:
+        return False, f"❌ Verification error: {str(e)}\nPath: {abs_path}"
 
-# Main test flow
-with st.expander("⚙️ Test Configuration", expanded=True):
-    st.write(f"**Model URL:** `{MODEL_URL}`")
-    st.write(f"**Local path:** `{MODEL_PATH}`")
+def load_model_safely(filepath):
+    """Complete loading function with absolute paths"""
+    abs_path = os.path.abspath(filepath)
+    if not os.path.exists(abs_path):
+        return None, f"❌ File not found at: {abs_path}"
     
-    if st.button("🔄 Reset Test (Delete Local Copy)"):
+    try:
+        # Attempt 1: Standard load
+        model = load_model(abs_path)
+        return model, "✅ Model loaded successfully (standard)"
+    except Exception as e1:
+        # Attempt 2: Without compilation
+        try:
+            model = load_model(abs_path, compile=False)
+            return model, "✅ Model loaded successfully (compile=False)"
+        except Exception as e2:
+            # Attempt 3: With custom objects
+            try:
+                custom_objects = {'InputLayer': InputLayer}
+                model = load_model(abs_path, custom_objects=custom_objects)
+                return model, "✅ Model loaded successfully (custom objects)"
+            except Exception as e3:
+                # Attempt 4: Try .h5 extension
+                try:
+                    model = load_model(abs_path + '.h5')
+                    return model, "✅ Model loaded successfully (.h5 extension)"
+                except:
+                    return None, f"""❌ All load attempts failed:
+                    - Standard: {str(e1)}
+                    - compile=False: {str(e2)}
+                    - Custom objects: {str(e3)}
+                    File location: {abs_path}"""
+
+# Main app flow
+with st.expander("⚙️ Configuration", expanded=True):
+    st.write(f"**Model URL:** `{MODEL_URL}`")
+    st.write(f"**Target path:** `{MODEL_PATH}`")
+    st.write(f"**Current working directory:** `{os.getcwd()}`")
+    
+    if st.button("🔄 Reset Test"):
         if os.path.exists(MODEL_PATH):
             os.remove(MODEL_PATH)
-            st.success("Local model deleted")
+            st.success(f"Deleted: {MODEL_PATH}")
         else:
-            st.info("No local model to delete")
+            st.info("No file to delete")
 
 st.header("1️⃣ Model Download")
 if not os.path.exists(MODEL_PATH):
@@ -158,85 +159,80 @@ if not os.path.exists(MODEL_PATH):
         if download_with_progress(MODEL_URL, MODEL_PATH):
             is_valid, message = verify_model_integrity(MODEL_PATH)
             if is_valid:
-                st.success(f"✅ Model verification passed: {message}")
+                st.success(message)
             else:
-                st.error(f"❌ Model verification failed: {message}")
+                st.error(message)
 else:
-    st.success("Model already downloaded")
+    st.success(f"Model already exists at:\n{MODEL_PATH}")
     file_size = os.path.getsize(MODEL_PATH)
-    st.write(f"**File size:** {format_size(file_size)}")
+    st.write(f"**Size:** {format_size(file_size)}")
     is_valid, message = verify_model_integrity(MODEL_PATH)
     if is_valid:
-        st.success(f"✅ {message}")
+        st.success(message)
     else:
-        st.error(f"❌ {message}")
+        st.error(message)
 
 st.header("2️⃣ Model Loading")
 if os.path.exists(MODEL_PATH):
-    if st.button("🔧 Attempt Model Load"):
-        model, message = load_model_safely(MODEL_PATH)
-        if model is not None:
-            st.success(message)
-            
-            st.subheader("Model Information")
-            cols = st.columns(2)
-            with cols[0]:
-                st.write("**Input shape:**", model.input_shape)
-            with cols[1]:
-                st.write("**Output shape:**", model.output_shape)
-            
-            st.subheader("Layer Summary")
-            with st.expander("Show layer details"):
-                try:
-                    from io import StringIO
-                    import sys
-                    
-                    buffer = StringIO()
-                    sys.stdout = buffer
-                    model.summary(print_fn=lambda x: st.text(x) or x)
-                    sys.stdout = sys.__stdout__
-                except Exception as e:
-                    st.warning(f"Couldn't show summary: {str(e)}")
-            
-            st.header("3️⃣ Prediction Test")
-            input_shape = model.input_shape[1:]  # Get input shape (excluding batch)
+    model, message = load_model_safely(MODEL_PATH)
+    if model is not None:
+        st.success(message)
+        
+        st.subheader("Model Information")
+        cols = st.columns(2)
+        with cols[0]:
+            st.write("**Input shape:**", model.input_shape)
+        with cols[1]:
+            st.write("**Output shape:**", model.output_shape)
+        
+        st.subheader("Layer Summary")
+        with st.expander("Show architecture"):
+            buffer = StringIO()
+            sys.stdout = buffer
+            model.summary(print_fn=lambda x: st.text(x))
+            sys.stdout = sys.__stdout__
+        
+        st.header("3️⃣ Prediction Test")
+        try:
+            input_shape = model.input_shape[1:]
             dummy_input = np.random.rand(1, *input_shape).astype(np.float32)
             
-            with st.spinner(f"Making prediction with input shape {input_shape}..."):
-                try:
-                    prediction = model.predict(dummy_input)
-                    st.success(f"🎉 Prediction successful! Output shape: {prediction.shape}")
-                    
-                    cols = st.columns(2)
-                    with cols[0]:
-                        st.write("**Input values sample:**")
-                        st.code(dummy_input[0].flatten()[:5])
-                    with cols[1]:
-                        st.write("**Output values sample:**")
-                        st.code(prediction[0].flatten()[:5])
-                except Exception as e:
-                    st.error(f"Prediction failed: {str(e)}")
-        else:
-            st.error(message)
+            with st.spinner(f"Predicting with shape {input_shape}..."):
+                prediction = model.predict(dummy_input)
+                st.success(f"🎉 Prediction successful! Output shape: {prediction.shape}")
+                
+                cols = st.columns(2)
+                with cols[0]:
+                    st.write("**Input sample:**")
+                    st.code(dummy_input[0].flatten()[:5])
+                with cols[1]:
+                    st.write("**Output sample:**")
+                    st.code(prediction[0].flatten()[:5])
+        except Exception as e:
+            st.error(f"Prediction failed: {str(e)}")
+    else:
+        st.error(message)
 else:
-    st.warning("No model file available - download first")
+    st.error(f"File not found at:\n{MODEL_PATH}")
 
 st.markdown("""
 ---
 ### Troubleshooting Guide
 
-1. **Download Fails**
-   - Verify the file is shared publicly (anyone with the link)
-   - Check your internet connection
-   - Try manual download: [Download Link](https://drive.google.com/uc?id=13S8aXIDQpixM5Siy-0tWHSm2MEHw1Ksh)
+1. **File Not Found Errors**
+   - Verify the exact path shown above
+   - Check file permissions
+   - Try the download again
 
-2. **Load Fails**
+2. **Load Failures**
    - Ensure TensorFlow version matches training environment
-   - Try different loading methods (shown in code)
-   - Check for custom layers that need registration
-
-3. **Prediction Fails**
-   - Verify input shape matches model expectations
-   - Check if preprocessing is needed
-   - Test with actual input data instead of random values
-""")
+   - Try manual loading in Python shell:
+     ```python
+     from tensorflow.keras.models import load_model
+     model = load_model(r'{}', compile=False)
+     ```
+     
+3. **Other Issues**
+   - Check file integrity (should be {} bytes)
+   - Try different model formats (.h5, .keras)
+""".format(MODEL_PATH, os.path.getsize(MODEL_PATH) if os.path.exists(MODEL_PATH) else "unknown"))
