@@ -1,6 +1,6 @@
-streamlit
-tensorflow
-numpy
-pillow
-matplotlib
-gdown
+streamlit>=1.22.0
+gdown>=4.6.0
+tensorflow>=2.10.0
+numpy>=1.23.0
+requests>=2.28.0
+Pillow>=9.3.0
