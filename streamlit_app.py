@@ -1,88 +1,123 @@
 import streamlit as st
-import os
-import sys
-import gdown
-from tensorflow.keras.models import load_model
+from PIL import Image
 import numpy as np
+import tensorflow as tf
+import os
+from tensorflow.keras.models import load_model
+from tensorflow.keras.preprocessing.image import img_to_array
+from huggingface_hub import hf_hub_download
 
-# 1. Configuración de rutas compatible con Streamlit Cloud
-MODEL_URL = "https://drive.google.com/uc?id=13S8aXIDQpixM5Siy-0tWHSm2MEHw1Ksh"
-MODEL_NAME = "my_model.keras"
-MODEL_PATH = os.path.join(os.getcwd(), MODEL_NAME)  # Ruta absoluta en el directorio de trabajo actual
+# Configuración de la página
+st.set_page_config(
+    page_title="Detector de Retinopatía Diabética",
+    page_icon="👁️",
+    layout="centered"
+)
 
-# 2. Función de descarga robusta
-def download_model():
-    if os.path.exists(MODEL_PATH):
-        st.warning("⚠️ El modelo ya existe. Borrando antes de redescargar...")
-        os.remove(MODEL_PATH)
-    
+# Título y descripción
+st.title("Detector de Retinopatía Diabética")
+st.markdown("""
+Esta aplicación utiliza un modelo de aprendizaje profundo (CNN) para clasificar imágenes
+de fondo de retina y detectar posibles casos de retinopatía diabética.
+""")
+
+# Función para descargar y cargar el modelo desde Hugging Face
+@st.cache_resource
+def cargar_modelo():
+    """Descarga y carga el modelo CNN desde Hugging Face Hub"""
     try:
-        with st.spinner(f"Descargando modelo (310MB) desde Google Drive..."):
-            gdown.download(MODEL_URL, MODEL_PATH, quiet=False)
+        # Crear directorio para el modelo si no existe
+        os.makedirs("modelo", exist_ok=True)
         
-        if os.path.exists(MODEL_PATH):
-            file_size = os.path.getsize(MODEL_PATH) / (1024 * 1024)
-            if file_size > 300:  # Verifica que el tamaño sea >300MB
-                st.success(f"✅ Descarga exitosa! Tamaño: {file_size:.1f}MB")
-                return True
+        # Información de Hugging Face Hub
+        # IMPORTANTE: Reemplaza estos valores con los de tu repositorio en Hugging Face
+        repo_id = "tu-usuario/retinopatia-diabetica-cnn"  # Reemplaza con tu usuario y nombre de repo
+        filename = "modelo_cnn_retina.h5"  # Nombre del archivo en Hugging Face
+        
+        with st.spinner("Descargando modelo desde Hugging Face Hub..."):
+            # Descargar modelo
+            model_path = hf_hub_download(
+                repo_id=repo_id,
+                filename=filename,
+                cache_dir="modelo"
+            )
+            
+            # Cargar el modelo
+            model = load_model(model_path)
+            st.success("Modelo cargado correctamente!")
+            return model
+    except Exception as e:
+        st.error(f"Error al cargar el modelo: {e}")
+        return None
+
+# Función para preprocesar la imagen
+def preprocesar_imagen(imagen):
+    """Preprocesa la imagen para que sea compatible con el modelo CNN"""
+    # Redimensionar la imagen al tamaño que espera el modelo (ajusta según tu modelo)
+    imagen = imagen.resize((224, 224))
+    
+    # Convertir a array y normalizar
+    img_array = img_to_array(imagen)
+    img_array = np.expand_dims(img_array, axis=0)
+    img_array = img_array / 255.0  # Normalización
+    
+    return img_array
+
+# Función para realizar la predicción
+def predecir_retinopatia(modelo, imagen_preprocesada):
+    """Realiza la predicción usando el modelo cargado"""
+    prediccion = modelo.predict(imagen_preprocesada)
+    return prediccion
+
+# Interfaz para subir archivos
+st.subheader("Subir imagen de fondo de retina")
+imagen_subida = st.file_uploader("Selecciona una imagen de fondo de retina", type=["jpg", "jpeg", "png"])
+
+# Si se ha subido una imagen
+if imagen_subida is not None:
+    # Mostrar la imagen subida
+    imagen = Image.open(imagen_subida)
+    st.image(imagen, caption="Imagen subida", use_column_width=True)
+    
+    # Botón para analizar la imagen
+    if st.button("Analizar imagen"):
+        with st.spinner("Analizando imagen..."):
+            # Cargar el modelo
+            modelo = cargar_modelo()
+            
+            if modelo:
+                # Preprocesar la imagen
+                imagen_preprocesada = preprocesar_imagen(imagen)
+                
+                # Realizar predicción
+                resultado = predecir_retinopatia(modelo, imagen_preprocesada)
+                
+                # Interpretar resultado (ajusta según tu modelo)
+                probabilidad = resultado[0][0]  # Asumiendo que es un modelo binario
+                
+                # Mostrar resultado
+                st.subheader("Resultado del análisis")
+                
+                if probabilidad > 0.5:
+                    st.error(f"Retinopatía diabética detectada con {probabilidad:.2%} de probabilidad")
+                else:
+                    st.success(f"No se detecta retinopatía diabética ({1-probabilidad:.2%} de confianza)")
+                
+                # Visualización de la probabilidad
+                st.progress(float(probabilidad))
+                
+                # Consejos adicionales
+                st.info("Este análisis es preliminar y no sustituye el diagnóstico médico profesional. Consulte a un oftalmólogo para una evaluación completa.")
             else:
-                st.error(f"❌ Archivo demasiado pequeño ({file_size:.1f}MB). ¿Descarga corrupta?")
-        else:
-            st.error("❌ El archivo no se creó correctamente")
-        return False
-    except Exception as e:
-        st.error(f"❌ Error en descarga: {str(e)}")
-        return False
+                st.error("No se pudo cargar el modelo. Por favor, verifica que el modelo esté correctamente configurado.")
 
-# 3. Verificación de ubicación REAL del archivo
-def debug_file_location():
-    st.subheader("🔍 Debug: Ubicación Real")
-    st.write(f"**Directorio actual:** `{os.getcwd()}`")
-    st.write(f"**Archivos presentes:** `{os.listdir()}`")
-    st.write(f"**Ruta esperada del modelo:** `{MODEL_PATH}`")
-    if os.path.exists(MODEL_PATH):
-        st.success(f"✔️ El modelo SÍ existe en la ruta esperada")
-    else:
-        st.error(f"✖️ El modelo NO está en la ruta esperada")
+# Información adicional
+st.markdown("---")
+st.subheader("Sobre esta aplicación")
+st.markdown("""
+Esta aplicación utiliza un modelo de Redes Neuronales Convolucionales (CNN) entrenado para 
+detectar signos de retinopatía diabética en imágenes de fondo de retina.
 
-# Interfaz principal
-st.title("🔧 Cargador de Modelos Grandes (310MB)")
-
-# --- Sección de Descarga ---
-st.header("1. Descargar Modelo")
-if st.button("⬇️ Descargar Modelo"):
-    if download_model():
-        st.balloons()
-
-# --- Sección de Debug --- 
-debug_file_location()
-
-# --- Sección de Carga ---
-st.header("2. Cargar Modelo")
-if os.path.exists(MODEL_PATH):
-    try:
-        with st.spinner("Cargando modelo..."):
-            model = load_model(MODEL_PATH)
-            st.success("✅ ¡Modelo cargado correctamente!")
-            
-            # Test de predicción
-            dummy_input = np.random.rand(*model.input_shape[1:]).astype(np.float32)
-            prediction = model.predict(np.expand_dims(dummy_input, axis=0))
-            st.success(f"🎉 ¡Predicción exitosa! Forma del output: {prediction.shape}")
-            
-    except Exception as e:
-        st.error(f"❌ Error al cargar: {str(e)}")
-        st.markdown("""
-        **Soluciones comunes:**
-        1. Verifica que el archivo sea un modelo Keras válido
-        2. Revisa la compatibilidad de versiones de TensorFlow
-        3. Usa el debug para confirmar la ubicación real
-        """)
-else:
-    st.warning("⚠️ Primero descarga el modelo")
-
-# --- Reset ---
-if st.button("🔄 Reiniciar Todo"):
-    if os.path.exists(MODEL_PATH):
-        os.remove(MODEL_PATH)
-    st.success("¡Entorno reiniciado!")
+La retinopatía diabética es una complicación de la diabetes que afecta a los ojos y puede 
+llevar a la pérdida de visión si no se detecta y trata a tiempo.
+""")
