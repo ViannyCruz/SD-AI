@@ -2,5 +2,6 @@ streamlit
 pillow
 numpy
 tensorflow
-scikit-learn
 huggingface-hub
+scikit-learn
+matplotlib
