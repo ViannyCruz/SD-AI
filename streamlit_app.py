@@ -22,10 +22,16 @@ Esta aplicación utiliza un modelo de aprendizaje profundo (CNN) para clasificar
 de fondo de retina y detectar posibles casos de retinopatía diabética.
 """)
 
+# Función para cargar modelo local
+def cargar_modelo_local(ruta_modelo):
+    try:
+        modelo = load_model(ruta_modelo)
+        return modelo, None
+    except Exception as e:
+        return None, str(e)
+
 # Función para descargar y cargar el modelo desde Hugging Face
-@st.cache_resource(show_spinner=False)
-def cargar_modelo():
-    """Descarga y carga el modelo CNN desde Hugging Face Hub"""
+def cargar_modelo_huggingface():
     try:
         # Crear directorio para el modelo si no existe
         os.makedirs("modelo", exist_ok=True)
@@ -34,14 +40,13 @@ def cargar_modelo():
         repo_id = "Ruthzen/RDCNN"
         filename = "best_model.h5"
         
-        # Mostrar información sobre la descarga
+        # Intentar descargar modelo
         with st.spinner(f"Descargando modelo desde {repo_id}..."):
-            # Descargar modelo
             model_path = hf_hub_download(
                 repo_id=repo_id,
                 filename=filename,
                 cache_dir="modelo",
-                force_download=True  # Forzar descarga para evitar problemas de caché
+                force_download=True
             )
             
             # Cargar el modelo
@@ -69,24 +74,87 @@ def predecir_retinopatia(modelo, imagen_preprocesada):
     prediccion = modelo.predict(imagen_preprocesada)
     return prediccion
 
+# Sidebar para opciones
+with st.sidebar:
+    st.title("Configuración")
+    
+    # Opción para seleccionar fuente del modelo
+    opcion_modelo = st.radio(
+        "Fuente del modelo:",
+        ["Hugging Face", "Archivo local"]
+    )
+    
+    if opcion_modelo == "Archivo local":
+        st.info("Selecciona tu archivo de modelo .h5 local.")
+        archivo_modelo = st.file_uploader("Subir modelo", type=["h5"])
+        
+        if archivo_modelo:
+            # Guardar el archivo temporalmente
+            with open("modelo_temporal.h5", "wb") as f:
+                f.write(archivo_modelo.getbuffer())
+            st.success(f"Archivo '{archivo_modelo.name}' guardado temporalmente")
+    
+    st.markdown("---")
+    
+    # Información sobre retinopatía
+    st.title("Información")
+    st.info("""
+    **¿Qué es la retinopatía diabética?**
+    
+    La retinopatía diabética es una complicación de la diabetes que daña los vasos sanguíneos en la retina.
+    
+    **Síntomas comunes:**
+    - Visión borrosa o fluctuante
+    - Áreas oscuras en el campo visual
+    - Dificultad para percibir colores
+    - Pérdida de visión
+    """)
+    
+    st.warning("""
+    **Aviso importante:**
+    
+    Esta herramienta es solo para fines educativos e informativos. No sustituye el diagnóstico profesional.
+    """)
+    
+    st.write("Desarrollado con ❤️ usando Streamlit y TensorFlow")
+
 # Sección de carga del modelo
 with st.expander("Estado del modelo", expanded=True):
     st.write("Verificando disponibilidad del modelo...")
-    modelo, error = cargar_modelo()
     
-    if modelo is not None:
-        st.success("✅ Modelo disponible y listo para usar")
-        # Mostrar información básica del modelo
+    # Carga del modelo según la opción seleccionada
+    if opcion_modelo == "Hugging Face":
+        modelo, error = cargar_modelo_huggingface()
+        
+        if modelo is not None:
+            st.success("✅ Modelo cargado correctamente desde Hugging Face")
+            modelo_disponible = True
+        else:
+            st.error(f"❌ Error al cargar el modelo: {error}")
+            st.error(f"Detalles: Intentando cargar desde Ruthzen/RDCNN, archivo best_model.h5")
+            st.info("Prueba cargando tu modelo local usando la opción en el panel lateral.")
+            modelo_disponible = False
+    else:
+        # Carga desde archivo local
+        if 'archivo_modelo' in locals() and archivo_modelo is not None:
+            modelo, error = cargar_modelo_local("modelo_temporal.h5")
+            
+            if modelo is not None:
+                st.success(f"✅ Modelo '{archivo_modelo.name}' cargado correctamente")
+                modelo_disponible = True
+            else:
+                st.error(f"❌ Error al cargar el modelo local: {error}")
+                modelo_disponible = False
+        else:
+            st.warning("Por favor, sube un archivo de modelo .h5 usando el panel lateral.")
+            modelo_disponible = False
+    
+    # Mostrar información del modelo si está disponible
+    if 'modelo_disponible' in locals() and modelo_disponible:
         st.write("Información del modelo:")
         st.code(f"Capas: {len(modelo.layers)}")
         st.code(f"Forma de entrada: {modelo.input_shape}")
         st.code(f"Forma de salida: {modelo.output_shape}")
-        modelo_disponible = True
-    else:
-        st.error(f"❌ Error al cargar el modelo: {error}")
-        st.error(f"Detalles: Intentando cargar desde Ruthzen/RDCNN, archivo best_model.h5")
-        st.info("Nota: Asegúrate de que el archivo 'best_model.h5' existe en tu repositorio de Hugging Face.")
-        modelo_disponible = False
 
 # Interfaz para subir archivos
 st.subheader("Subir imagen de fondo de retina")
@@ -100,11 +168,8 @@ if imagen_subida is not None:
     
     # Botón para analizar la imagen
     if st.button("Analizar imagen"):
-        if modelo_disponible:
+        if 'modelo_disponible' in locals() and modelo_disponible:
             with st.spinner("Analizando imagen..."):
-                # Simular tiempo de procesamiento (opcional)
-                time.sleep(1)
-                
                 # Preprocesar la imagen
                 imagen_preprocesada = preprocesar_imagen(imagen)
                 
@@ -136,7 +201,10 @@ if imagen_subida is not None:
                 st.info("Este análisis es preliminar y no sustituye el diagnóstico médico profesional. Consulte a un oftalmólogo para una evaluación completa.")
         else:
             st.error("No se puede realizar el análisis porque el modelo no está disponible.")
-            st.info("Intenta recargar la página o verifica la configuración del modelo.")
+            if opcion_modelo == "Hugging Face":
+                st.info("Prueba cargando tu modelo local desde el panel lateral.")
+            else:
+                st.info("Por favor, sube tu archivo de modelo .h5.")
 
 # Información adicional
 st.markdown("---")
@@ -148,32 +216,3 @@ detectar signos de retinopatía diabética en imágenes de fondo de retina.
 La retinopatía diabética es una complicación de la diabetes que afecta a los ojos y puede 
 llevar a la pérdida de visión si no se detecta y trata a tiempo.
 """)
-
-# Sidebar con información adicional
-with st.sidebar:
-    st.title("Información")
-    st.info("""
-    **¿Qué es la retinopatía diabética?**
-    
-    La retinopatía diabética es una complicación de la diabetes que daña los vasos sanguíneos en la retina (la capa sensible a la luz en la parte posterior del ojo).
-    
-    **Síntomas comunes:**
-    - Visión borrosa o fluctuante
-    - Áreas oscuras o vacías en el campo visual
-    - Dificultad para percibir colores
-    - Pérdida de visión
-    
-    **Prevención:**
-    - Control regular de la glucosa en sangre
-    - Mantener la presión arterial y los niveles de colesterol bajo control
-    - Exámenes oculares regulares
-    - Estilo de vida saludable
-    """)
-    
-    st.warning("""
-    **Aviso importante:**
-    
-    Esta herramienta es solo para fines educativos e informativos. No sustituye el diagnóstico profesional. Consulte siempre a un profesional de la salud.
-    """)
-    
-    st.write("Desarrollado con ❤️ usando Streamlit y TensorFlow")
