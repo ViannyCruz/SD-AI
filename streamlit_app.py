@@ -51,6 +51,7 @@ def cargar_modelo():
         st.error(f"Error al cargar el modelo: {e}")
         # Más información para depuración
         st.error(f"Detalles: Intentando cargar desde {repo_id}, archivo {filename}")
+        st.info("Nota: Asegúrate de que el archivo 'best_model.h5' existe en tu repositorio de Hugging Face.")
         return None
 
 # Función para preprocesar la imagen
