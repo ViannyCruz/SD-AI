@@ -32,7 +32,7 @@ def cargar_modelo():
         
         # Información de Hugging Face Hub
         repo_id = "Ruthzen/RDCNN"
-        filename = "modelo_cnn_retina.h5"
+        filename = "best_model.h5"
         
         # Mostrar información sobre la descarga
         with st.spinner("Descargando modelo desde Hugging Face Hub..."):
