@@ -6,6 +6,7 @@ import os
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.image import img_to_array
 from huggingface_hub import hf_hub_download
+import time
 
 # Configuración de la página
 st.set_page_config(
@@ -30,10 +31,10 @@ def cargar_modelo():
         os.makedirs("modelo", exist_ok=True)
         
         # Información de Hugging Face Hub
-        # IMPORTANTE: Reemplaza estos valores con los de tu repositorio en Hugging Face
-        repo_id = "tu-usuario/retinopatia-diabetica-cnn"  # Reemplaza con tu usuario y nombre de repo
-        filename = "modelo_cnn_retina.h5"  # Nombre del archivo en Hugging Face
+        repo_id = "Ruthzen/RDCNN"
+        filename = "modelo_cnn_retina.h5"
         
+        # Mostrar información sobre la descarga
         with st.spinner("Descargando modelo desde Hugging Face Hub..."):
             # Descargar modelo
             model_path = hf_hub_download(
@@ -48,12 +49,14 @@ def cargar_modelo():
             return model
     except Exception as e:
         st.error(f"Error al cargar el modelo: {e}")
+        # Más información para depuración
+        st.error(f"Detalles: Intentando cargar desde {repo_id}, archivo {filename}")
         return None
 
 # Función para preprocesar la imagen
 def preprocesar_imagen(imagen):
     """Preprocesa la imagen para que sea compatible con el modelo CNN"""
-    # Redimensionar la imagen al tamaño que espera el modelo (ajusta según tu modelo)
+    # Redimensionar la imagen al tamaño que espera el modelo
     imagen = imagen.resize((224, 224))
     
     # Convertir a array y normalizar
@@ -69,6 +72,34 @@ def predecir_retinopatia(modelo, imagen_preprocesada):
     prediccion = modelo.predict(imagen_preprocesada)
     return prediccion
 
+# Verificar si el modelo está disponible
+@st.cache_resource
+def verificar_modelo():
+    try:
+        modelo = cargar_modelo()
+        if modelo is not None:
+            return True, modelo
+        else:
+            return False, None
+    except Exception as e:
+        st.error(f"Error al verificar el modelo: {e}")
+        return False, None
+
+# Sección de carga del modelo
+with st.expander("Estado del modelo", expanded=False):
+    st.write("Verificando disponibilidad del modelo...")
+    modelo_disponible, modelo = verificar_modelo()
+    
+    if modelo_disponible:
+        st.success("✅ Modelo disponible y listo para usar")
+        # Mostrar información básica del modelo
+        st.write("Información del modelo:")
+        st.code(f"Capas: {len(modelo.layers)}")
+        st.code(f"Forma de entrada: {modelo.input_shape}")
+        st.code(f"Forma de salida: {modelo.output_shape}")
+    else:
+        st.error("❌ No se pudo cargar el modelo. Por favor, verifica la configuración.")
+
 # Interfaz para subir archivos
 st.subheader("Subir imagen de fondo de retina")
 imagen_subida = st.file_uploader("Selecciona una imagen de fondo de retina", type=["jpg", "jpeg", "png"])
@@ -81,11 +112,11 @@ if imagen_subida is not None:
     
     # Botón para analizar la imagen
     if st.button("Analizar imagen"):
-        with st.spinner("Analizando imagen..."):
-            # Cargar el modelo
-            modelo = cargar_modelo()
-            
-            if modelo:
+        if modelo_disponible:
+            with st.spinner("Analizando imagen..."):
+                # Simular tiempo de procesamiento (opcional)
+                time.sleep(1)
+                
                 # Preprocesar la imagen
                 imagen_preprocesada = preprocesar_imagen(imagen)
                 
@@ -98,18 +129,26 @@ if imagen_subida is not None:
                 # Mostrar resultado
                 st.subheader("Resultado del análisis")
                 
-                if probabilidad > 0.5:
-                    st.error(f"Retinopatía diabética detectada con {probabilidad:.2%} de probabilidad")
-                else:
-                    st.success(f"No se detecta retinopatía diabética ({1-probabilidad:.2%} de confianza)")
+                col1, col2 = st.columns(2)
                 
-                # Visualización de la probabilidad
-                st.progress(float(probabilidad))
+                with col1:
+                    if probabilidad > 0.5:
+                        st.error(f"Retinopatía diabética detectada")
+                        st.metric("Probabilidad", f"{probabilidad:.2%}")
+                    else:
+                        st.success(f"No se detecta retinopatía diabética")
+                        st.metric("Confianza", f"{1-probabilidad:.2%}")
+                
+                with col2:
+                    # Visualización de la probabilidad
+                    st.write("Nivel de confianza:")
+                    st.progress(float(probabilidad))
                 
                 # Consejos adicionales
                 st.info("Este análisis es preliminar y no sustituye el diagnóstico médico profesional. Consulte a un oftalmólogo para una evaluación completa.")
-            else:
-                st.error("No se pudo cargar el modelo. Por favor, verifica que el modelo esté correctamente configurado.")
+        else:
+            st.error("No se puede realizar el análisis porque el modelo no está disponible.")
+            st.info("Intenta recargar la página o verifica la configuración del modelo.")
 
 # Información adicional
 st.markdown("---")
@@ -121,3 +160,32 @@ detectar signos de retinopatía diabética en imágenes de fondo de retina.
 La retinopatía diabética es una complicación de la diabetes que afecta a los ojos y puede 
 llevar a la pérdida de visión si no se detecta y trata a tiempo.
 """)
+
+# Sidebar con información adicional
+with st.sidebar:
+    st.title("Información")
+    st.info("""
+    **¿Qué es la retinopatía diabética?**
+    
+    La retinopatía diabética es una complicación de la diabetes que daña los vasos sanguíneos en la retina (la capa sensible a la luz en la parte posterior del ojo).
+    
+    **Síntomas comunes:**
+    - Visión borrosa o fluctuante
+    - Áreas oscuras o vacías en el campo visual
+    - Dificultad para percibir colores
+    - Pérdida de visión
+    
+    **Prevención:**
+    - Control regular de la glucosa en sangre
+    - Mantener la presión arterial y los niveles de colesterol bajo control
+    - Exámenes oculares regulares
+    - Estilo de vida saludable
+    """)
+    
+    st.warning("""
+    **Aviso importante:**
+    
+    Esta herramienta es solo para fines educativos e informativos. No sustituye el diagnóstico profesional. Consulte siempre a un profesional de la salud.
+    """)
+    
+    st.write("Desarrollado con ❤️ usando Streamlit y TensorFlow")
