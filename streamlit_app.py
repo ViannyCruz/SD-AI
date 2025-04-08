@@ -23,7 +23,7 @@ de fondo de retina y detectar posibles casos de retinopatía diabética.
 """)
 
 # Función para descargar y cargar el modelo desde Hugging Face
-@st.cache_resource
+@st.cache_resource(show_spinner=False)
 def cargar_modelo():
     """Descarga y carga el modelo CNN desde Hugging Face Hub"""
     try:
@@ -35,24 +35,20 @@ def cargar_modelo():
         filename = "best_model.h5"
         
         # Mostrar información sobre la descarga
-        with st.spinner("Descargando modelo desde Hugging Face Hub..."):
+        with st.spinner(f"Descargando modelo desde {repo_id}..."):
             # Descargar modelo
             model_path = hf_hub_download(
                 repo_id=repo_id,
                 filename=filename,
-                cache_dir="modelo"
+                cache_dir="modelo",
+                force_download=True  # Forzar descarga para evitar problemas de caché
             )
             
             # Cargar el modelo
             model = load_model(model_path)
-            st.success("Modelo cargado correctamente!")
-            return model
+            return model, None
     except Exception as e:
-        st.error(f"Error al cargar el modelo: {e}")
-        # Más información para depuración
-        st.error(f"Detalles: Intentando cargar desde {repo_id}, archivo {filename}")
-        st.info("Nota: Asegúrate de que el archivo 'best_model.h5' existe en tu repositorio de Hugging Face.")
-        return None
+        return None, str(e)
 
 # Función para preprocesar la imagen
 def preprocesar_imagen(imagen):
@@ -73,33 +69,24 @@ def predecir_retinopatia(modelo, imagen_preprocesada):
     prediccion = modelo.predict(imagen_preprocesada)
     return prediccion
 
-# Verificar si el modelo está disponible
-@st.cache_resource
-def verificar_modelo():
-    try:
-        modelo = cargar_modelo()
-        if modelo is not None:
-            return True, modelo
-        else:
-            return False, None
-    except Exception as e:
-        st.error(f"Error al verificar el modelo: {e}")
-        return False, None
-
 # Sección de carga del modelo
-with st.expander("Estado del modelo", expanded=False):
+with st.expander("Estado del modelo", expanded=True):
     st.write("Verificando disponibilidad del modelo...")
-    modelo_disponible, modelo = verificar_modelo()
+    modelo, error = cargar_modelo()
     
-    if modelo_disponible:
+    if modelo is not None:
         st.success("✅ Modelo disponible y listo para usar")
         # Mostrar información básica del modelo
         st.write("Información del modelo:")
         st.code(f"Capas: {len(modelo.layers)}")
         st.code(f"Forma de entrada: {modelo.input_shape}")
         st.code(f"Forma de salida: {modelo.output_shape}")
+        modelo_disponible = True
     else:
-        st.error("❌ No se pudo cargar el modelo. Por favor, verifica la configuración.")
+        st.error(f"❌ Error al cargar el modelo: {error}")
+        st.error(f"Detalles: Intentando cargar desde Ruthzen/RDCNN, archivo best_model.h5")
+        st.info("Nota: Asegúrate de que el archivo 'best_model.h5' existe en tu repositorio de Hugging Face.")
+        modelo_disponible = False
 
 # Interfaz para subir archivos
 st.subheader("Subir imagen de fondo de retina")
@@ -124,8 +111,8 @@ if imagen_subida is not None:
                 # Realizar predicción
                 resultado = predecir_retinopatia(modelo, imagen_preprocesada)
                 
-                # Interpretar resultado (ajusta según tu modelo)
-                probabilidad = resultado[0][0]  # Asumiendo que es un modelo binario
+                # Interpretar resultado (asumiendo que es un modelo binario)
+                probabilidad = resultado[0][0]
                 
                 # Mostrar resultado
                 st.subheader("Resultado del análisis")
